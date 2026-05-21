@@ -50,8 +50,9 @@ const GROUP_CONFIG = {
   }
 };
 
-const UPDATE_PANEL_INTERVAL = 5 * 60 * 1000;
-const STORE_PPM_INTERVAL = 30 * 60 * 1000;
+const UPDATE_PANEL_INTERVAL = 10 * 60 * 1000;
+const STORE_PPM_INTERVAL = 60 * 60 * 1000;
+
 
 const client = new Client({
   intents: [
@@ -575,7 +576,7 @@ async function generatePanel(group) {
 
   const heartbeatChannel = await client.channels.fetch(config.heartbeatChannelId);
 
-  const messages = await fetchMessagesByHours(heartbeatChannel, 12);
+  const messages = await fetchMessagesByHours(heartbeatChannel, 4);
 
   const onlineList = [];
   const offlineList = [];
