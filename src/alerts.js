@@ -9,6 +9,12 @@ const CRASH_TIMEOUT = 45 * 60 * 1000;
 const UPDATE_INTERVAL = 10 * 60 * 1000;
 
 const crashTimers = new Map();
+const USERS_CACHE = new Map();
+const USERS_CACHE_TTL = 5 * 60 * 1000;
+
+let ACTIVE_ROLES_CACHE = null;
+let ACTIVE_ROLES_CACHE_TS = 0;
+const ACTIVE_ROLES_CACHE_TTL = 60 * 1000;
 
 // ================= REDIS KEYS =================
 
@@ -25,9 +31,25 @@ function activeRolesKey() {
 
 async function getActiveRole(redis, discordId) {
   try {
+    const now = Date.now();
+
+    if (
+      ACTIVE_ROLES_CACHE &&
+      now - ACTIVE_ROLES_CACHE_TS < ACTIVE_ROLES_CACHE_TTL
+    ) {
+      return ACTIVE_ROLES_CACHE[String(discordId)] || null;
+    }
+
     const data = await redis.hgetall(activeRolesKey());
 
-    if (!data || typeof data !== "object") return null;
+    if (!data || typeof data !== "object") {
+      ACTIVE_ROLES_CACHE = {};
+      ACTIVE_ROLES_CACHE_TS = now;
+      return null;
+    }
+
+    ACTIVE_ROLES_CACHE = data;
+    ACTIVE_ROLES_CACHE_TS = now;
 
     return data[String(discordId)] || null;
   } catch (err) {
@@ -147,15 +169,34 @@ function getUserGameIds(userData) {
 }
 
 async function loadUsers(redis, group) {
+  const now = Date.now();
+  const cached = USERS_CACHE.get(group);
+
+  if (cached && now - cached.ts < USERS_CACHE_TTL) {
+    return cached.data;
+  }
+
   const data = await redis.hgetall(usersKey(group));
 
-  if (!data || typeof data !== "object") return {};
+  if (!data || typeof data !== "object") {
+    USERS_CACHE.set(group, {
+      ts: now,
+      data: {}
+    });
+
+    return {};
+  }
 
   const users = {};
 
   for (const discordId in data) {
     users[discordId] = safeJsonParse(data[discordId], {});
   }
+
+  USERS_CACHE.set(group, {
+    ts: now,
+    data: users
+  });
 
   return users;
 }
@@ -197,6 +238,7 @@ const RIVAL_DUO_GRACE_MS = 15 * 60 * 1000
 const RIVAL_DUO_CRASH_TIMEOUT = 45 * 60 * 1000
 const RIVAL_DUO_UPDATE_INTERVAL = 10 * 60 * 1000
 const RIVAL_DUO_REQUIRED_TOTAL_INSTANCES = 6
+const RIVAL_DUO_HEARTBEAT_TIMEOUT_MS = 45 * 60 * 1000;
 
 function parseRivalJson(value, fallback = {}) {
   try {
@@ -1149,22 +1191,24 @@ async function cleanOldMessages(client, publicAlertsChannelId) {
       }
     }
 
-    const publicChannel = guild.channels.cache.get(publicAlertsChannelId);
+if (publicAlertsChannelId) {
+  const publicChannel = guild.channels.cache.get(publicAlertsChannelId);
 
-    if (publicChannel) {
-      const messages = await publicChannel.messages.fetch({ limit: 100 }).catch(() => null);
+  if (publicChannel) {
+    const messages = await publicChannel.messages.fetch({ limit: 100 }).catch(() => null);
 
-      if (messages) {
-        for (const msg of messages.values()) {
-          if (
-            msg.author.id === client.user.id &&
-            now - msg.createdTimestamp > MESSAGE_LIFETIME
-          ) {
-            await msg.delete().catch(() => {});
-          }
+    if (messages) {
+      for (const msg of messages.values()) {
+        if (
+          msg.author.id === client.user.id &&
+          now - msg.createdTimestamp > MESSAGE_LIFETIME
+        ) {
+          await msg.delete().catch(() => {});
         }
       }
     }
+  }
+}
   }
 }
 
@@ -1184,10 +1228,10 @@ module.exports = (client, options) => {
     console.log("✅ alerts.js loaded");
 
 
-    setInterval(
-      () => cleanOldMessages(client, PUBLIC_ALERTS_CHANNEL_ID),
-      60 * 60 * 1000
-    );
+   setInterval(
+  () => cleanOldMessages(client, null),
+  60 * 60 * 1000
+);
   });
 
   client.on("messageCreate", async (message) => {
@@ -1296,14 +1340,7 @@ if (group === "Elite_Four") {
           `\`\`\`\n${content}\n\`\`\``
       });
 
-      await sendGlobalHeartbeat(
-        client,
-        guild,
-        GLOBAL_HEARTBEAT_CHANNEL_ID,
-        group,
-        userData,
-        content
-      );
+  
 if (isRivalDuo) {
   const freshDuo = await recordRivalDuoHeartbeat(redis, discordId, content);
 
@@ -1321,7 +1358,7 @@ if (isRivalDuo) {
   }
 }
 
-      const publicChannel = guild.channels.cache.get(PUBLIC_ALERTS_CHANNEL_ID);
+      const publicChannel = null;
 
 let onlineIds = await loadOnlineIDs(redis, group);
 let isOnlineGame = isUserOnlineInRedis(userData, onlineIds);
