@@ -1353,7 +1353,7 @@ if (isRivalDuo) {
       championRoleId: CHAMPION_ROLE_ID,
       categoryId: CATEGORY_ID,
       group,
-      publicChannel: guild.channels.cache.get(PUBLIC_ALERTS_CHANNEL_ID)
+      publicChannel: null
     });
   }
 }
