@@ -311,13 +311,7 @@ function namesMatch(heartbeatName, registeredName) {
 
   if (!hb || !reg) return false;
 
-  if (hb === reg) return true;
-
-  // Permite coincidencia si uno contiene al otro.
-  // Útil si el heartbeat manda "Wender Ramirez" y el registro tiene "Wender".
-  if (hb.includes(reg) || reg.includes(hb)) return true;
-
-  return false;
+  return hb === reg;
 }
 
 function getUserNameCandidates(userData) {
@@ -354,6 +348,83 @@ function findLastUserMessageForUser(messages, userData) {
   }
 
   return null;
+}
+
+function findLastMessagesForUserAliases(messages, userData) {
+  if (!messages || !Array.isArray(messages)) return [];
+
+  const candidates = getUserNameCandidates(userData);
+  const foundByName = new Map();
+
+  for (const msg of messages) {
+    const content = getMessageText(msg);
+    if (!content) continue;
+
+    const heartbeatName = extractHeartbeatName(content);
+    const normalizedHeartbeatName = normalizeHeartbeatName(heartbeatName);
+
+    if (!normalizedHeartbeatName) continue;
+
+    for (const candidate of candidates) {
+      const normalizedCandidate = normalizeHeartbeatName(candidate);
+
+      if (!normalizedCandidate) continue;
+
+      if (namesMatch(heartbeatName, candidate)) {
+        if (!foundByName.has(normalizedCandidate)) {
+          foundByName.set(normalizedCandidate, msg);
+        }
+      }
+    }
+  }
+
+  const uniqueMessages = new Map();
+
+  for (const msg of foundByName.values()) {
+    uniqueMessages.set(msg.id, msg);
+  }
+
+  return Array.from(uniqueMessages.values());
+}
+
+function mergeStatsFromMessages(messages) {
+  const merged = {
+    time: "0",
+    packs: 0,
+    ppm: 0,
+    online: [],
+    offline: []
+  };
+
+  for (const msg of messages) {
+    const content = getMessageText(msg);
+    const stats = parseStats(content);
+
+    merged.ppm += Number(stats.ppm) || 0;
+    merged.packs += Number(stats.packs) || 0;
+
+    if (stats.time && stats.time !== "0") {
+      merged.time = stats.time;
+    }
+
+    if (Array.isArray(stats.online)) {
+      merged.online.push(...stats.online);
+    }
+
+    if (Array.isArray(stats.offline)) {
+      if (!stats.offline.includes("none")) {
+        merged.offline.push(...stats.offline);
+      }
+    }
+  }
+
+  merged.ppm = Number(merged.ppm.toFixed(2));
+
+  if (!merged.offline.length) {
+    merged.offline = ["none"];
+  }
+
+  return merged;
 }
 
 function calculateGlobalStats(onlineStats) {
@@ -517,20 +588,19 @@ async function buildRivalDuoStatsForPanel(messages) {
         main_id: member.gameId
       }
 
-      const msg = findLastUserMessageForUser(messages, fakeUser)
+const memberMessages = findLastMessagesForUserAliases(messages, fakeUser)
 
-      let stats = {
-        time: "0",
-        packs: 0,
-        ppm: 0,
-        online: [],
-        offline: []
-      }
+let stats = {
+  time: "0",
+  packs: 0,
+  ppm: 0,
+  online: [],
+  offline: ["none"]
+}
 
-      if (msg) {
-        const content = getMessageText(msg)
-        stats = parseStats(content)
-      }
+if (memberMessages.length) {
+  stats = mergeStatsFromMessages(memberMessages)
+}
 
       const counts = countDuoInstances(stats)
 
@@ -593,26 +663,26 @@ const user = {
       onlineIds.has(user.main_id) ||
       (user.sec_id && onlineIds.has(user.sec_id));
 
-const msg = findLastUserMessageForUser(messages, user);
+const userMessages = findLastMessagesForUserAliases(messages, user);
 
-if (!msg) {
+if (!userMessages.length) {
   console.log(
     `⚠️ No heartbeat found for ${user.name} | heartbeatName: ${user.heartbeatName || "none"} in ${group}`
   );
 }
 
-    let stats = {
-      time: "0",
-      packs: 0,
-      ppm: 0,
-      online: [],
-      offline: []
-    };
+let stats = {
+  time: "0",
+  packs: 0,
+  ppm: 0,
+  online: [],
+  offline: ["none"]
+};
 
-if (msg) {
-  const content = getMessageText(msg);
-  stats = parseStats(content);
+if (userMessages.length) {
+  stats = mergeStatsFromMessages(userMessages);
 }
+    
 
     if (isOnline) {
       onlineStats.push(stats);
