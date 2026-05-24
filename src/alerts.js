@@ -1045,6 +1045,7 @@ async function getOrCreatePersonalChannel({
   categoryId,
   group
 }) {
+  await guild.channels.fetch();
   const topicTag = `user:${discordId}`;
 
   const safeName = String(userData.heartbeatName || userData.name || member.user.username || "user")
@@ -1079,9 +1080,22 @@ async function getOrCreatePersonalChannel({
       permission &&
       permission.allow.has(PermissionFlagsBits.ViewChannel);
 
-    const nameLooksSame =
-      channel.name === desiredName ||
-      channel.name.includes(safeName);
+ const hasUserPermission =
+  permission &&
+  permission.allow.has(PermissionFlagsBits.ViewChannel);
+
+if (hasUserPermission) {
+  userChannel = channel;
+
+  await userChannel.setTopic(topicTag).catch(() => {});
+
+  console.log(
+    `♻️ Reusing old personal channel for ${userData.name || discordId}: #${userChannel.name}`
+  );
+
+  return userChannel;
+}
+
 
     if (hasUserPermission || nameLooksSame) {
       userChannel = channel;
@@ -1125,6 +1139,17 @@ async function getOrCreatePersonalChannel({
     });
   }
 
+await guild.channels.fetch();
+
+const existingAfterFetch = guild.channels.cache.find(c =>
+  c.type === ChannelType.GuildText &&
+  c.topic === topicTag
+);
+
+if (existingAfterFetch) {
+  return existingAfterFetch;
+}
+  
   userChannel = await guild.channels.create({
     name: desiredName,
     type: ChannelType.GuildText,
