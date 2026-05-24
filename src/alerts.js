@@ -1073,43 +1073,26 @@ async function getOrCreatePersonalChannel({
     c.name.startsWith("personal-")
   );
 
-  for (const channel of possibleChannels.values()) {
-    const permission = channel.permissionOverwrites.cache.get(discordId);
+for (const channel of possibleChannels.values()) {
+  const permission = channel.permissionOverwrites.cache.get(discordId);
 
-    const hasUserPermission =
-      permission &&
-      permission.allow.has(PermissionFlagsBits.ViewChannel);
+  const hasUserPermission =
+    permission &&
+    permission.allow.has(PermissionFlagsBits.ViewChannel);
 
- const hasUserPermission =
-  permission &&
-  permission.allow.has(PermissionFlagsBits.ViewChannel);
+  if (hasUserPermission) {
+    userChannel = channel;
 
-if (hasUserPermission) {
-  userChannel = channel;
+    // Reparar topic para evitar duplicados futuros
+    await userChannel.setTopic(topicTag).catch(() => {});
 
-  await userChannel.setTopic(topicTag).catch(() => {});
+    console.log(
+      `♻️ Reusing old personal channel for ${userData.name || discordId}: #${userChannel.name}`
+    );
 
-  console.log(
-    `♻️ Reusing old personal channel for ${userData.name || discordId}: #${userChannel.name}`
-  );
-
-  return userChannel;
-}
-
-
-    if (hasUserPermission || nameLooksSame) {
-      userChannel = channel;
-
-      // Reparar topic para que nunca vuelva a duplicarse
-      await userChannel.setTopic(topicTag).catch(() => {});
-
-      console.log(
-        `♻️ Reusing old personal channel for ${userData.name || discordId}: #${userChannel.name}`
-      );
-
-      return userChannel;
-    }
+    return userChannel;
   }
+}
 
   // 3. Si no existe, crear canal nuevo
   const championRole = guild.roles.cache.get(championRoleId);
