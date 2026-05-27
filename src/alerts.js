@@ -15,6 +15,7 @@ const USERS_CACHE_TTL = 5 * 60 * 1000;
 let ACTIVE_ROLES_CACHE = null;
 let ACTIVE_ROLES_CACHE_TS = 0;
 const ACTIVE_ROLES_CACHE_TTL = 60 * 1000;
+const inactivityStreaks = new Map();
 
 // ================= REDIS KEYS =================
 
@@ -553,6 +554,18 @@ function getRivalDuoHealth(duo) {
   for (const member of members) {
     const stats = duo.lastHeartbeatStats?.[member.discordId];
 
+    const lastHeartbeat =
+  Number(duo.lastHeartbeatAt?.[member.discordId] || 0);
+
+const isFresh =
+  lastHeartbeat &&
+  Date.now() - lastHeartbeat < RIVAL_DUO_HEARTBEAT_TIMEOUT_MS;
+
+if (!isFresh) {
+  missingActive.push(member);
+  continue;
+}
+
     const hasActiveNumeric = stats?.hasActiveNumeric === true;
     const memberTotal = Number(stats?.totalInstances || 0);
 
@@ -836,7 +849,7 @@ async function handleRivalDuoDedicatedAlerts({
       duo,
       reason: "rival_duo_not_enough_total_instances",
       detail:
-        `Rival Duo requires **7 total numeric instances** to stay in Elite Four.\n` +
+        `Rival Duo requires **6 total numeric instances** to stay in Elite Four.\n` +
         `Current total numeric instances detected: **${health.totalInstances}/7**.`,
       championRoleId,
       categoryId,
@@ -1438,8 +1451,8 @@ if (isRivalDuo) {
     );
   }
 }
-}
-if (isRivalDuo || activeRivalDuoRole) {
+
+if (activeRivalDuoRole && !isRivalDuo) {
   return;
 }
 const { count, hasMain } = parseOffline(content);
@@ -1468,12 +1481,25 @@ const { count, hasMain } = parseOffline(content);
         }
       }
 
-      const inactive = isInactive(content);
-      const timerKey = isRivalDuo && rivalDuoData
+const inactive =
+  isInactive(content) ||
+  !hasActiveHeartbeat(content);
+
+const timerKey = isRivalDuo && rivalDuoData
   ? `${group}:rival_duo:${rivalDuoData.id}`
   : `${group}:${discordId}`;
 
-      if (inactive) {
+if (inactive) {
+  const current = inactivityStreaks.get(timerKey) || 0;
+  inactivityStreaks.set(timerKey, current + 1);
+} else {
+  inactivityStreaks.delete(timerKey);
+}
+
+const inactivityCount =
+  inactivityStreaks.get(timerKey) || 0;
+
+     if (inactive && inactivityCount >= 3) {
         const freshOnlineIds = await loadOnlineIDs(redis, group);
         const stillOnline = isUserOnlineInRedis(userData, freshOnlineIds);
 
@@ -1576,12 +1602,15 @@ crashTimers.delete(timerKey);
           crashTimers.set(timerKey, { timeout, interval });
         }
       } else {
-        if (crashTimers.has(timerKey)) {
+        if (
+  crashTimers.has(timerKey) &&
+  hasActiveHeartbeat(content)
+) {
           const timer = crashTimers.get(timerKey);
 
           clearTimeout(timer.timeout);
           clearInterval(timer.interval);
-
+inactivityStreaks.delete(timerKey);
           crashTimers.delete(timerKey);
 
           await userChannel.send({
