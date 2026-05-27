@@ -892,6 +892,18 @@ function getMainGameId(userData) {
   const mainId = normalizeId(userData.main_id);
   return /^\d{16}$/.test(mainId) ? mainId : null;
 }
+function getSecGameId(userData) {
+  const secId = normalizeId(userData.sec_id);
+  return /^\d{16}$/.test(secId) ? secId : null;
+}
+
+function isSpecificIdOnline(id, onlineIds) {
+  const cleanId = normalizeId(id);
+
+  return onlineIds
+    .map(normalizeId)
+    .includes(cleanId);
+}
 
 function getNumericOnlineInstances(content) {
   const online = getOnlineInstances(content);
@@ -1377,29 +1389,55 @@ const activeHeartbeat = hasActiveHeartbeat(content);
 if (isRivalDuo) {
   // Rival Duo does not auto-online from heartbeat.
   // Online/offline is controlled only by button or command.
-//} else if (!activeRivalDuoRole && !isOnlineGame && mainGameId && activeHeartbeat) {
-//  await addOnlineIDs(redis, group, [mainGameId]);
+} else if (!activeRivalDuoRole && !isOnlineGame && mainGameId && activeHeartbeat) {
 
-//  onlineIds = await loadOnlineIDs(redis, group);
- // isOnlineGame = isUserOnlineInRedis(userData, onlineIds);
+  const secGameId = getSecGameId(userData);
 
- // const ppm = getHeartbeatPPM(content);
- // const activeCount = getNumericOnlineInstances(content).length;
+  // =====================================================
+  // NO activar auto-online si el SEC ya está online
+  // =====================================================
 
- // const autoOnlineEmbed = new EmbedBuilder()
-   // .setColor(0x00ff88)
-    //.setDescription(
-     // `🟢 ${member} was set **ONLINE automatically**.\n` +
-    //  `Detected **${activeCount} active instance${activeCount !== 1 ? "s" : ""}**, ` +
-     // `**${ppm.toFixed(2)} PPM**, and valid type **Inject Wonderpick 96P+**.`
-   // );
+  if (secGameId && isSpecificIdOnline(secGameId, onlineIds)) {
 
-  //await userChannel.send({ embeds: [autoOnlineEmbed] }).catch(() => {});
+    console.log(
+      `⚠️ Auto-online blocked for ${userData.name} | SEC already online: ${secGameId}`
+    );
 
-//  const publicChannelForOnline = guild.channels.cache.get(PUBLIC_ALERTS_CHANNEL_ID);
- // if (publicChannelForOnline) {
- //   await publicChannelForOnline.send({ embeds: [autoOnlineEmbed] }).catch(() => {});
- // }
+  } else {
+
+    await addOnlineIDs(redis, group, [mainGameId]);
+
+    onlineIds = await loadOnlineIDs(redis, group);
+    isOnlineGame = isUserOnlineInRedis(userData, onlineIds);
+
+    const ppm = getHeartbeatPPM(content);
+    const activeCount = getNumericOnlineInstances(content).length;
+
+    const autoOnlineEmbed = new EmbedBuilder()
+      .setColor(0x00ff88)
+      .setDescription(
+        `🟢 ${member} was set **ONLINE automatically**.\n\n` +
+        `Activated ID: \`${mainGameId}\`\n\n` +
+        `Detected **${activeCount} active instance${activeCount !== 1 ? "s" : ""}**, ` +
+        `**${ppm.toFixed(2)} PPM**, and valid type **Inject Wonderpick 96P+**.`
+      );
+
+    await userChannel.send({ embeds: [autoOnlineEmbed] }).catch(() => {});
+
+    const publicChannelForOnline =
+      guild.channels.cache.get(PUBLIC_ALERTS_CHANNEL_ID);
+
+    if (publicChannelForOnline) {
+      await publicChannelForOnline
+        .send({ embeds: [autoOnlineEmbed] })
+        .catch(() => {});
+    }
+
+    console.log(
+      `🟢 Auto-online activated for ${userData.name} | Main ID: ${mainGameId}`
+    );
+  }
+}
 }
 if (isRivalDuo || activeRivalDuoRole) {
   return;
