@@ -545,33 +545,26 @@ duo.lastHeartbeatStats[String(discordId)] = {
   return duo
 }
 
+// CÁMBIALO PARA QUE QUEDE ASÍ:
 function getRivalDuoHealth(duo) {
   const members = getRivalDuoMembers(duo);
-
   let totalInstances = 0;
   let missingActive = [];
 
   for (const member of members) {
     const stats = duo.lastHeartbeatStats?.[member.discordId];
+    const lastHeartbeat = Number(duo.lastHeartbeatAt?.[member.discordId] || 0);
 
-    const lastHeartbeat =
-  Number(duo.lastHeartbeatAt?.[member.discordId] || 0);
-
-const isFresh =
-  lastHeartbeat &&
-  Date.now() - lastHeartbeat < RIVAL_DUO_HEARTBEAT_TIMEOUT_MS;
-
-if (!isFresh) {
-  missingActive.push(member);
-  continue;
-}
-
-    const hasActiveNumeric = stats?.hasActiveNumeric === true;
+    const isFresh = lastHeartbeat && (Date.now() - lastHeartbeat < RIVAL_DUO_HEARTBEAT_TIMEOUT_MS);
+    
+    // Primero sumamos lo que hay guardado en su último estado conocido
     const memberTotal = Number(stats?.totalInstances || 0);
-
     totalInstances += memberTotal;
 
-    if (!hasActiveNumeric) {
+    // Evaluamos las alertas de actividad
+    const hasActiveNumeric = stats?.hasActiveNumeric === true;
+
+    if (!isFresh || !hasActiveNumeric) {
       missingActive.push(member);
     }
   }
@@ -584,6 +577,7 @@ if (!isFresh) {
     hasEnoughTotalInstances: totalInstances >= RIVAL_DUO_REQUIRED_TOTAL_INSTANCES
   };
 }
+// CÁMBIALO PARA QUE QUEDE ASÍ:
 async function sendRivalDuoAlertToBoth({
   guild,
   client,
@@ -598,8 +592,11 @@ async function sendRivalDuoAlertToBoth({
   const members = getRivalDuoMembers(duo);
 
   for (const duoMember of members) {
-    const member = await guild.members.fetch(duoMember.discordId).catch(() => null);
-    if (!member) continue;
+    // Si no encuentra el miembro completo, generamos un fallback para que getOrCreatePersonalChannel no explote
+    let member = await guild.members.fetch(duoMember.discordId).catch(() => null);
+    if (!member) {
+      member = { id: duoMember.discordId, user: { username: duoMember.name || "user" } };
+    }
 
     const userData = {
       name: duoMember.name,
@@ -619,10 +616,12 @@ async function sendRivalDuoAlertToBoth({
       group
     });
 
-    if (embed) {
-      await userChannel.send({ embeds: [embed] }).catch(() => {});
-    } else if (content) {
-      await userChannel.send({ content }).catch(() => {});
+    if (userChannel) {
+      if (embed) {
+        await userChannel.send({ embeds: [embed] }).catch(() => {});
+      } else if (content) {
+        await userChannel.send({ content }).catch(() => {});
+      }
     }
   }
 
