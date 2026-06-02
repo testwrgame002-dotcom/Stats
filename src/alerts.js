@@ -550,21 +550,26 @@ function getRivalDuoHealth(duo) {
   const members = getRivalDuoMembers(duo);
   let totalInstances = 0;
   let missingActive = [];
+  let missingHeartbeat = []; // 👈 Nueva lista para registrar bots completamente apagados
 
   for (const member of members) {
     const stats = duo.lastHeartbeatStats?.[member.discordId];
     const lastHeartbeat = Number(duo.lastHeartbeatAt?.[member.discordId] || 0);
 
+    // Verificamos si envió un pulso dentro del tiempo límite permitido (45 min)
     const isFresh = lastHeartbeat && (Date.now() - lastHeartbeat < RIVAL_DUO_HEARTBEAT_TIMEOUT_MS);
     
-    // Primero sumamos lo que hay guardado en su último estado conocido
+    // Sumamos lo guardado en su último estado conocido
     const memberTotal = Number(stats?.totalInstances || 0);
     totalInstances += memberTotal;
 
-    // Evaluamos las alertas de actividad
     const hasActiveNumeric = stats?.hasActiveNumeric === true;
 
-    if (!isFresh || !hasActiveNumeric) {
+    if (!isFresh) {
+      // El bot lleva más de 45 minutos en silencio absoluto o nunca envió nada
+      missingHeartbeat.push(member);
+    } else if (!hasActiveNumeric) {
+      // El bot envía datos, pero reporta 0 instancias activas o "Online: none"
       missingActive.push(member);
     }
   }
@@ -573,7 +578,8 @@ function getRivalDuoHealth(duo) {
     members,
     totalInstances,
     missingActive,
-    hasMissingActive: missingActive.length > 0,
+    missingHeartbeat, // 👈 Lo exportamos en el objeto de salud
+    hasMissingActive: missingActive.length > 0 || missingHeartbeat.length > 0,
     hasEnoughTotalInstances: totalInstances >= RIVAL_DUO_REQUIRED_TOTAL_INSTANCES
   };
 }
@@ -807,17 +813,41 @@ async function handleRivalDuoDedicatedAlerts({
   const members = getRivalDuoMembers(duo);
   if (members.length < 2) return;
 
+  // Si acaban de ponerse online, no hacemos nada hasta que pase el tiempo de gracia (15 minutos)
   if (!duo.lastRotationAt) return;
-
   const onlineFor = Date.now() - Number(duo.lastRotationAt || 0);
-
   if (onlineFor < RIVAL_DUO_GRACE_MS) {
-    return;
+    return; 
   }
 
   const health = getRivalDuoHealth(duo);
 
-  if (health.hasMissingActive) {
+  // 1. PRIORIDAD: Detectar si hay bots completamente apagados (Sin enviar heartbeat)
+  if (health.missingHeartbeat.length > 0) {
+    const missingNames = health.missingHeartbeat
+      .map(m => `<@${m.discordId}>`)
+      .join(", ");
+
+    await startRivalDuoOfflineTimer({
+      redis,
+      guild,
+      client,
+      duo,
+      reason: "rival_duo_missing_heartbeat_stream",
+      detail:
+        `🚨 **Atención:** El bot de inyección de: ${missingNames} **no está enviando heartbeats** a Discord.\n` +
+        `Por favor, verifiquen si la consola se cerró o perdió conexión. Ambos deben transmitir pulsos de forma continua.`,
+      championRoleId,
+      categoryId,
+      group,
+      publicChannel
+    });
+
+    return;
+  }
+
+  // 2. SEGUNDA ALERTA: Envía pulsos, pero no tiene instancias numéricas activas
+  if (health.missingActive.length > 0) {
     const missingNames = health.missingActive
       .map(m => `<@${m.discordId}>`)
       .join(", ");
@@ -829,8 +859,8 @@ async function handleRivalDuoDedicatedAlerts({
       duo,
       reason: "rival_duo_no_active_numeric_heartbeat",
       detail:
-        `No active numeric heartbeat was detected for: ${missingNames}.\n` +
-        `Both Rival Duo users must keep active numeric instances.`,
+        `⚠️ No se detectaron instancias numéricas activas para: ${missingNames}.\n` +
+        `Ambos usuarios del Rival Duo deben mantener instancias numéricas corriendo activamente.`,
       championRoleId,
       categoryId,
       group,
@@ -840,6 +870,7 @@ async function handleRivalDuoDedicatedAlerts({
     return;
   }
 
+  // 3. TERCERA ALERTA: Las instancias activas e inactivas de ambos no suman 6 en total
   if (!health.hasEnoughTotalInstances) {
     await startRivalDuoOfflineTimer({
       redis,
@@ -848,8 +879,8 @@ async function handleRivalDuoDedicatedAlerts({
       duo,
       reason: "rival_duo_not_enough_total_instances",
       detail:
-        `Rival Duo requires **6 total numeric instances** to stay in Elite Four.\n` +
-        `Current total numeric instances detected: **${health.totalInstances}/7**.`,
+        `Rival Duo requiere un mínimo de **6 instancias numéricas totales** para permanecer en Elite Four.\n` +
+        `Total actual detectado en el sistema: **${health.totalInstances}/${RIVAL_DUO_REQUIRED_TOTAL_INSTANCES}**.`,
       championRoleId,
       categoryId,
       group,
