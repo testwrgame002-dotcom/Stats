@@ -1433,7 +1433,7 @@ module.exports = (client, options) => {
       GLOBAL_LAST_HEARTBEAT_CACHE.set(String(discordId), Date.now());
 
       console.log(
-        ``✅ alerts.js match: heartbeat="${heartbeatName}" -> ${userData.name || "Unknown"} (${discordId})`
+        `✅ alerts.js match: heartbeat="${heartbeatName}" -> ${userData.name || "Unknown"} (${discordId})`
       );
 
       const guild = message.guild;
