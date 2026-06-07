@@ -856,8 +856,8 @@ async function handleRivalDuoDedicatedAlerts({
       duo,
       reason: "rival_duo_no_active_numeric_heartbeat",
       detail:
-        `⚠️ No se detectaron instancias numéricas activas para: ${missingNames}.\n` +
-        `Ambos usuarios del Rival Duo deben mantener instancias numéricas corriendo activamente.`,
+        `⚠️ No active numeric instances were detected for: ${missingNames}.\n` +
+        `Both Rival Duo users must keep numeric instances actively running.`,
       championRoleId,
       categoryId,
       group,
