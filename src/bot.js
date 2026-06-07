@@ -648,80 +648,116 @@ async function generatePanel(group) {
 
   const messages = await fetchMessagesByHours(heartbeatChannel, 4);
 
-  const onlineList = [];
-  const offlineList = [];
   const onlineStats = [];
+  
+  // Arrays temporales para guardar los objetos procesados antes de ordenarlos
+  const processedOnlineUsers = [];
+  const processedOfflineUsers = [];
 
   for (const discordId in users) {
-const user = {
-  ...users[discordId],
-  main_id: normalizeId(users[discordId].main_id),
-  sec_id: normalizeId(users[discordId].sec_id)
-};
+    const user = {
+      ...users[discordId],
+      main_id: normalizeId(users[discordId].main_id),
+      sec_id: normalizeId(users[discordId].sec_id)
+    };
 
     const isOnline =
       onlineIds.has(user.main_id) ||
       (user.sec_id && onlineIds.has(user.sec_id));
 
-const userMessages = findLastMessagesForUserAliases(messages, user);
+    const userMessages = findLastMessagesForUserAliases(messages, user);
 
-if (!userMessages.length) {
-  console.log(
-    `⚠️ No heartbeat found for ${user.name} | heartbeatName: ${user.heartbeatName || "none"} in ${group}`
-  );
-}
+    if (!userMessages.length) {
+      console.log(
+        `⚠️ No heartbeat found for ${user.name} | heartbeatName: ${user.heartbeatName || "none"} in ${group}`
+      );
+    }
 
-let stats = {
-  time: "0",
-  packs: 0,
-  ppm: 0,
-  online: [],
-  offline: ["none"]
-};
+    let stats = {
+      time: "0",
+      packs: 0,
+      ppm: 0,
+      online: [],
+      offline: ["none"]
+    };
 
-if (userMessages.length) {
-  stats = mergeStatsFromMessages(userMessages);
-}
-    
+    if (userMessages.length) {
+      stats = mergeStatsFromMessages(userMessages);
+    }
 
+    // En lugar de pushear texto, guardamos el objeto con sus stats para poder ordenar
     if (isOnline) {
       onlineStats.push(stats);
 
-      const onlineCount = stats.online.filter(x => x.toLowerCase() !== "main").length;
-      const offlineCount = stats.offline.includes("none") ? 0 : stats.offline.length;
-
-      onlineList.push(
-        `⚔️ **${user.name}**\n` +
-        `⚡ ${stats.ppm} | 🀄️ ${stats.packs} | ⏱ ${stats.time} | 🖥️ ${onlineCount} | 💤 ${offlineCount}`
-      );
+      processedOnlineUsers.push({
+        name: user.name,
+        stats: stats
+      });
     } else {
-      offlineList.push(
-        `💤 **${user.name}** | 🀄️ ${stats.packs} | ⏱ ${stats.time}`
+      processedOfflineUsers.push({
+        name: user.name,
+        stats: stats
+      });
+    }
+  }
+
+  // ================= SECCIÓN DE RIVAL DUO =================
+  const onlineDuoLines = []; // Guardará las líneas de texto de las duplas directamente
+
+  if (group === "Elite_Four") {
+    const duoPanelStats = await buildRivalDuoStatsForPanel(messages);
+
+    for (const duo of duoPanelStats) {
+      onlineStats.push({
+        ppm: duo.ppm,
+        packs: duo.packs,
+        time: duo.time,
+        online: Array.from({ length: duo.onlineCount }, (_, i) => String(i + 1)),
+        offline: duo.offlineCount > 0
+          ? Array.from({ length: duo.offlineCount }, (_, i) => String(i + 1))
+          : ["none"]
+      });
+
+      // Añadimos las duplas a un array separado (si quieres ordenarlas junto con los usuarios online, avísame)
+      onlineDuoLines.push(
+        `🤝 **${duo.name}**\n` +
+        `⚡ ${duo.ppm.toFixed(2)} | 🀄️ ${duo.packs} | ⏱ ${duo.time} | 🖥️ ${duo.onlineCount} | 💤 ${duo.offlineCount}`
       );
     }
   }
-if (group === "Elite_Four") {
-  const duoPanelStats = await buildRivalDuoStatsForPanel(messages)
 
-  for (const duo of duoPanelStats) {
-    onlineStats.push({
-      ppm: duo.ppm,
-      packs: duo.packs,
-      time: duo.time,
-      online: Array.from({ length: duo.onlineCount }, (_, i) => String(i + 1)),
-      offline: duo.offlineCount > 0
-        ? Array.from({ length: duo.offlineCount }, (_, i) => String(i + 1))
-        : ["none"]
-    })
+  // ================= ORDENAMIENTO POR PACKS (Mayor a Menor) =================
+  processedOnlineUsers.sort((a, b) => b.stats.packs - a.stats.packs);
+  processedOfflineUsers.sort((a, b) => b.stats.packs - a.stats.packs);
 
-onlineList.push(
-  `🤝 **${duo.name}**\n` +
-  `⚡ ${duo.ppm.toFixed(2)} | 🀄️ ${duo.packs} | ⏱ ${duo.time} | 🖥️ ${duo.onlineCount} | 💤 ${duo.offlineCount}`
-)
+  // ================= CONSTRUCCIÓN DE LISTAS PARA EL EMBED =================
+  const onlineList = [];
+  const offlineList = [];
+
+  // Mapeamos los usuarios online ya ordenados a su formato de texto
+  for (const u of processedOnlineUsers) {
+    const onlineCount = u.stats.online.filter(x => x.toLowerCase() !== "main").length;
+    const offlineCount = u.stats.offline.includes("none") ? 0 : u.stats.offline.length;
+
+    onlineList.push(
+      `⚔️ **${u.name}**\n` +
+      `⚡ ${u.stats.ppm} | 🀄️ ${u.stats.packs} | ⏱ ${u.stats.time} | 🖥️ ${onlineCount} | 💤 ${offlineCount}`
+    );
   }
-}
-  
 
+  // Agregamos las líneas de las duplas al final de la lista online (mantiene tu lógica original)
+  if (onlineDuoLines.length > 0) {
+    onlineList.push(...onlineDuoLines);
+  }
+
+  // Mapeamos los usuarios offline ya ordenados a su formato de texto
+  for (const u of processedOfflineUsers) {
+    offlineList.push(
+      `💤 **${u.name}** | 🀄️ ${u.stats.packs} | ⏱ ${u.stats.time}`
+    );
+  }
+
+  // ================= RESTO DEL CÓDIGO IGUAL =================
   const global = calculateGlobalStats(onlineStats);
   const gp = formatGPStats(await getLiveStats(group));
   const cachedAvgPPM = await refreshAveragePPM(group);
@@ -742,56 +778,16 @@ onlineList.push(
       `📉 Avg (12h): **${cachedAvgPPM}**`
     )
     .addFields(
-      {
-        name: "👥 Users",
-        value: `**${global.users}**`,
-        inline: true
-      },
-      {
-        name: "🀄️Pack/12h",
-        value: `**${global.totalPacks}**`,
-        inline: true
-      },
-      {
-        name: "⚡ Avg/User",
-        value: `**${global.avgPPM}**`,
-        inline: true
-      },
-      {
-        name: "🔥 Instances",
-        value: `**${global.instancesDisplay}**`,
-        inline: true
-      },
-      {
-        name: "📊 Avg/Inst",
-        value: `**${global.avgInstances}**`,
-        inline: true
-      },
-      {
-        name: "🎯 GP/h",
-        value: `**${global.gpPerHour}**`,
-        inline: true
-      },
-      {
-        name: "⏱ Min/GP",
-        value: `**${global.minutesToGP}**`,
-        inline: true
-      },
-      {
-        name: "🌟 GP Today",
-        value: `**${gp.todayGP}**\n💖 **${gp.todayAlive} alive**`,
-        inline: true
-      },
-      {
-        name: "💫 Total (5d)",
-        value: `**${gp.totalGP}**\n💖 **${gp.totalAlive} alive**`,
-        inline: true
-      },
-      {
-        name: "📅 Last 5 Days",
-        value: gp.historyText || "No data",
-        inline: false
-      }
+      { name: "👥 Users", value: `**${global.users}**`, inline: true },
+      { name: "🀄️Pack/12h", value: `**${global.totalPacks}**`, inline: true },
+      { name: "⚡ Avg/User", value: `**${global.avgPPM}**`, inline: true },
+      { name: "🔥 Instances", value: `**${global.instancesDisplay}**`, inline: true },
+      { name: "📊 Avg/Inst", value: `**${global.avgInstances}**`, inline: true },
+      { name: "🎯 GP/h", value: `**${global.gpPerHour}**`, inline: true },
+      { name: "⏱ Min/GP", value: `**${global.minutesToGP}**`, inline: true },
+      { name: "🌟 GP Today", value: `**${gp.todayGP}**\n💖 **${gp.todayAlive} alive**`, inline: true },
+      { name: "💫 Total (5d)", value: `**${gp.totalGP}**\n💖 **${gp.totalAlive} alive**`, inline: true },
+      { name: "📅 Last 5 Days", value: gp.historyText || "No data", inline: false }
     );
 
   return {
