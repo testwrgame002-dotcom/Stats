@@ -236,7 +236,7 @@ async function addOnlineIDs(redis, group, ids) {
 const RIVAL_DUOS_KEY = "rival_duos"
 const RIVAL_DUO_BY_USER_KEY = "rival_duo_by_user"
 const RIVAL_DUO_GRACE_MS = 15 * 60 * 1000
-const RIVAL_DUO_CRASH_TIMEOUT = 45 * 60 * 1000
+const RIVAL_DUO_CRASH_TIMEOUT = 30 * 60 * 1000
 const RIVAL_DUO_UPDATE_INTERVAL = 10 * 60 * 1000
 const RIVAL_DUO_REQUIRED_TOTAL_INSTANCES = 6
 const RIVAL_DUO_HEARTBEAT_TIMEOUT_MS = 45 * 60 * 1000;
@@ -550,26 +550,22 @@ function getRivalDuoHealth(duo) {
   const members = getRivalDuoMembers(duo);
   let totalInstances = 0;
   let missingActive = [];
-  let missingHeartbeat = []; // 👈 Nueva lista para registrar bots completamente apagados
+  let missingHeartbeat = [];
 
   for (const member of members) {
     const stats = duo.lastHeartbeatStats?.[member.discordId];
     const lastHeartbeat = Number(duo.lastHeartbeatAt?.[member.discordId] || 0);
 
-    // Verificamos si envió un pulso dentro del tiempo límite permitido (45 min)
     const isFresh = lastHeartbeat && (Date.now() - lastHeartbeat < RIVAL_DUO_HEARTBEAT_TIMEOUT_MS);
     
-    // Sumamos lo guardado en su último estado conocido
     const memberTotal = Number(stats?.totalInstances || 0);
     totalInstances += memberTotal;
 
     const hasActiveNumeric = stats?.hasActiveNumeric === true;
 
     if (!isFresh) {
-      // El bot lleva más de 45 minutos en silencio absoluto o nunca envió nada
       missingHeartbeat.push(member);
     } else if (!hasActiveNumeric) {
-      // El bot envía datos, pero reporta 0 instancias activas o "Online: none"
       missingActive.push(member);
     }
   }
@@ -578,8 +574,9 @@ function getRivalDuoHealth(duo) {
     members,
     totalInstances,
     missingActive,
-    missingHeartbeat, // 👈 Lo exportamos en el objeto de salud
-    hasMissingActive: missingActive.length > 0 || missingHeartbeat.length > 0,
+    missingHeartbeat,
+    // Activa la alerta si faltan bots, instancias activas, O si el total combinado es menor a 6
+    hasMissingActive: missingActive.length > 0 || missingHeartbeat.length > 0 || totalInstances < RIVAL_DUO_REQUIRED_TOTAL_INSTANCES,
     hasEnoughTotalInstances: totalInstances >= RIVAL_DUO_REQUIRED_TOTAL_INSTANCES
   };
 }
@@ -658,12 +655,12 @@ async function startRivalDuoOfflineTimer({
 
   let elapsed = 0;
 
-  const startEmbed = new EmbedBuilder()
+const startEmbed = new EmbedBuilder()
     .setColor(0xFFA500)
     .setDescription(
       `⚠️ Rival Duo **${displayRivalDuoName(duo)}** has an issue.\n\n` +
       `${detail}\n\n` +
-      `Offline countdown started. If this is not fixed in **45 minutes**, both users will be set offline.`
+      `Offline countdown started. If this is not fixed in **30 minutes**, both users will be set offline.`
     );
 
   await sendRivalDuoAlertToBoth({
@@ -1287,16 +1284,88 @@ module.exports = (client, options) => {
     redis
   } = options;
 
+// ================= MAIN MODULE =================
+
+module.exports = (client, options) => {
+  const {
+    GROUP_CONFIG,
+    CHAMPION_ROLE_ID,
+    PUBLIC_ALERTS_CHANNEL_ID,
+    redis
+  } = options;
+
+  // Mapa interno para guardar la hora exacta del último pulso recibido por cada usuario/ID
+  const GLOBAL_LAST_HEARTBEAT_CACHE = new Map();
+
+  // 1. INICIALIZACIÓN DE TEMPORIZADORES CUANDO EL BOT SE CONECTA
   client.once("ready", () => {
     console.log("✅ alerts.js loaded");
 
+    // Ejecutar el escáner de inactividad estricto cada 1 minuto
+    setInterval(checkAllHeartbeats, 60 * 1000);
 
-   setInterval(
-  () => cleanOldMessages(client, null),
-  60 * 60 * 1000
-);
+    setInterval(
+      () => cleanOldMessages(client, null),
+      60 * 60 * 1000
+    );
   });
 
+  // 2. FUNCIÓN ESCÁNER: REVISA LOS 40 MINUTOS DE INACTIVIDAD GLOBAL
+  async function checkAllHeartbeats() {
+    const now = Date.now();
+
+    for (const [group, config] of Object.entries(GROUP_CONFIG)) {
+      const guild = client.guilds.cache.get(config.guildId);
+      if (!guild) continue;
+
+      const onlineIds = await loadOnlineIDs(redis, group);
+      const users = await loadUsers(redis, group);
+
+      for (const [discordId, userData] of Object.entries(users)) {
+        // Si el usuario figura como ONLINE en el sistema (Redis)
+        if (isUserOnlineInRedis(userData, onlineIds)) {
+          const lastHbTime = GLOBAL_LAST_HEARTBEAT_CACHE.get(String(discordId));
+          
+          // REGLA: Si está online pero pasaron 40 minutos o más sin mandar heartbeat, se va offline de inmediato
+          if (lastHbTime && (now - lastHbTime >= 40 * 60 * 1000)) {
+            const userGameIds = getUserGameIds(userData);
+            await removeOnlineIDs(redis, group, userGameIds);
+            
+            if (await hasActiveRivalDuoRole(redis, discordId)) {
+              await setRivalDuoOffline(redis, discordId, "heartbeat_missing_40min");
+            }
+            console.log(`🔴 [40 Min Timeout] Usuario ${userData.name || discordId} movido a OFFLINE inmediatamente por desaparecer.`);
+          }
+        }
+      }
+    }
+    
+    // Control de alertas recurrentes de los Rival Duos (Mínimo 6 instancias / 30 min)
+    const duos = await loadAllRivalDuos(redis);
+    for (const duo of Object.values(duos)) {
+      if (!duo || duo.status !== "online") continue;
+      
+      const config = GROUP_CONFIG["Elite_Four"];
+      if (!config) continue;
+
+      const guild = client.guilds.cache.get(config.guildId);
+      const publicChannel = guild?.channels.cache.get(PUBLIC_ALERTS_CHANNEL_ID);
+
+      if (guild) {
+        await handleRivalDuoDedicatedAlerts({
+          redis, guild, client, duo,
+          championRoleId: CHAMPION_ROLE_ID,
+          categoryId: config.categoryId,
+          group: "Elite_Four",
+          publicChannel
+        });
+      }
+    }
+    
+    await checkRivalDuoHeartbeatTimeouts(redis);
+  }
+
+  // 3. CAPTURA Y PROCESAMIENTO DE HEARTBEATS EN ENTRADA
   client.on("messageCreate", async (message) => {
     try {
       const group = getGroupByHeartbeatChannel(GROUP_CONFIG, message.channel.id);
@@ -1308,72 +1377,76 @@ module.exports = (client, options) => {
       const heartbeatName = extractHeartbeatName(content);
       if (!heartbeatName) return;
 
-const users = await loadUsers(redis, group);
+      const users = await loadUsers(redis, group);
 
-let entry = findUserByHeartbeatName(users, heartbeatName);
-let isRivalDuo = false;
-let rivalDuoData = null;
+      let entry = findUserByHeartbeatName(users, heartbeatName);
+      let isRivalDuo = false;
+      let rivalDuoData = null;
 
-if (!entry && group === "Elite_Four") {
-  const duoEntry = await findRivalDuoMemberByHeartbeatName(redis, heartbeatName);
+      if (!entry && group === "Elite_Four") {
+        const duoEntry = await findRivalDuoMemberByHeartbeatName(redis, heartbeatName);
 
-  if (duoEntry) {
-    isRivalDuo = true;
-    rivalDuoData = duoEntry.duo;
+        if (duoEntry) {
+          isRivalDuo = true;
+          rivalDuoData = duoEntry.duo;
 
-    entry = [
-      duoEntry.discordId,
-      {
-        name: duoEntry.member.name,
-        heartbeatName: duoEntry.member.heartbeatName,
-        main_id: duoEntry.member.gameId,
-        aliases: duoEntry.member.aliases || [],
-        role: "Rival Duo"
+          entry = [
+            duoEntry.discordId,
+            {
+              name: duoEntry.member.name,
+              heartbeatName: duoEntry.member.heartbeatName,
+              main_id: duoEntry.member.gameId,
+              aliases: duoEntry.member.aliases || [],
+              role: "Rival Duo"
+            }
+          ];
+        }
       }
-    ];
-  }
-}
 
-if (!entry) {
-  console.log(`⚠️ alerts.js no encontró usuario: "${heartbeatName}" en ${group}`);
-  console.log(
-    "Usuarios disponibles:",
-    Object.values(users).slice(0, 10).map(u => ({
-      name: u.name,
-      heartbeatName: u.heartbeatName,
-      aliases: u.aliases
-    }))
-  );
-  return;
-}
+      if (!entry) {
+        console.log(`⚠️ alerts.js no encontró usuario: "${heartbeatName}" en ${group}`);
+        console.log(
+          "Usuarios disponibles:",
+          Object.values(users).slice(0, 10).map(u => ({
+            name: u.name,
+            heartbeatName: u.heartbeatName,
+            aliases: u.aliases
+          }))
+        );
+        return;
+      }
 
-let [discordId, userData] = entry;
+      let [discordId, userData] = entry;
       let activeRivalDuoRole = false;
 
-if (group === "Elite_Four") {
-  activeRivalDuoRole = await hasActiveRivalDuoRole(redis, discordId);
+      if (group === "Elite_Four") {
+        activeRivalDuoRole = await hasActiveRivalDuoRole(redis, discordId);
 
-  if (activeRivalDuoRole && !isRivalDuo) {
-    const duoEntry = await findRivalDuoMemberByHeartbeatName(redis, heartbeatName);
+        if (activeRivalDuoRole && !isRivalDuo) {
+          const duoEntry = await findRivalDuoMemberByHeartbeatName(redis, heartbeatName);
 
-    if (duoEntry) {
-      isRivalDuo = true;
-      rivalDuoData = duoEntry.duo;
-      discordId = duoEntry.discordId;
+          if (duoEntry) {
+            isRivalDuo = true;
+            rivalDuoData = duoEntry.duo;
+            discordId = duoEntry.discordId;
 
-      userData = {
-        name: duoEntry.member.name,
-        heartbeatName: duoEntry.member.heartbeatName,
-        main_id: duoEntry.member.gameId,
-        aliases: duoEntry.member.aliases || [],
-        role: "Rival Duo"
-      };
-    }
-  }
-}
+            userData = {
+              name: duoEntry.member.name,
+              heartbeatName: duoEntry.member.heartbeatName,
+              main_id: duoEntry.member.gameId,
+              aliases: duoEntry.member.aliases || [],
+              role: "Rival Duo"
+            };
+          }
+        }
+      }
+
+      // Guardamos la hora exacta en la que este usuario acaba de registrar actividad legítima
+      GLOBAL_LAST_HEARTBEAT_CACHE.set(String(discordId), Date.now());
+
       console.log(
-  `✅ alerts.js match: heartbeat="${heartbeatName}" -> ${userData.name || "Unknown"} (${discordId})`
-);
+        ``✅ alerts.js match: heartbeat="${heartbeatName}" -> ${userData.name || "Unknown"} (${discordId})`
+      );
 
       const guild = message.guild;
       if (!guild) return;
@@ -1385,6 +1458,7 @@ if (group === "Elite_Four") {
         return;
       }
 
+      const config = GROUP_CONFIG[group];
       const userChannel = await getOrCreatePersonalChannel({
         guild,
         client,
@@ -1392,100 +1466,58 @@ if (group === "Elite_Four") {
         userData,
         discordId,
         championRoleId: CHAMPION_ROLE_ID,
-        categoryId: CATEGORY_ID,
+        categoryId: config?.categoryId,
         group
       });
 
       await userChannel.send({
         content:
           `📡 **Heartbeat Update for ${userData.name || member.displayName}**\n` +
-          `🏷️ **Group:** ${GROUP_CONFIG[group]?.label || group}\n\n` +
+          `🏷️ **Group:** ${config?.label || group}\n\n` +
           `\`\`\`\n${content}\n\`\`\``
       });
 
-  
-if (isRivalDuo) {
-  const freshDuo = await recordRivalDuoHeartbeat(redis, discordId, content);
+      if (isRivalDuo) {
+        const freshDuo = await recordRivalDuoHeartbeat(redis, discordId, content);
 
-  if (freshDuo) {
-    await handleRivalDuoDedicatedAlerts({
-      redis,
-      guild,
-      client,
-      duo: freshDuo,
-      championRoleId: CHAMPION_ROLE_ID,
-      categoryId: CATEGORY_ID,
-      group,
-      publicChannel: null
-    });
-  }
-}
+        if (freshDuo) {
+          await handleRivalDuoDedicatedAlerts({
+            redis,
+            guild,
+            client,
+            duo: freshDuo,
+            championRoleId: CHAMPION_ROLE_ID,
+            categoryId: config?.categoryId,
+            group,
+            publicChannel: null
+          });
+        }
+      }
 
       const publicChannel = null;
 
-let onlineIds = await loadOnlineIDs(redis, group);
-let isOnlineGame = isUserOnlineInRedis(userData, onlineIds);
+      let onlineIds = await loadOnlineIDs(redis, group);
+      let isOnlineGame = isUserOnlineInRedis(userData, onlineIds);
 
-const mainGameId = getMainGameId(userData);
-const activeHeartbeat = hasActiveHeartbeat(content);
+      const mainGameId = getMainGameId(userData);
+      const activeHeartbeat = hasActiveHeartbeat(content);
 
-if (isRivalDuo) {
-  // Rival Duo does not auto-online from heartbeat.
-  // Online/offline is controlled only by button or command.
-} else if (!activeRivalDuoRole && !isOnlineGame && mainGameId && activeHeartbeat) {
+      if (isRivalDuo) {
+        // Rival Duo no hace auto-online
+      } else if (!activeRivalDuoRole && !isOnlineGame && mainGameId && activeHeartbeat) {
+        const secGameId = getSecGameId(userData);
 
-  const secGameId = getSecGameId(userData);
+        if (secGameId && isSpecificIdOnline(secGameId, onlineIds)) {
+          console.log(
+            `⚠️ Auto-online blocked for ${userData.name} | SEC already online: ${secGameId}`
+          );
+        }
+      }
 
-  // =====================================================
-  // NO activar auto-online si el SEC ya está online
-  // =====================================================
-
-  if (secGameId && isSpecificIdOnline(secGameId, onlineIds)) {
-
-    console.log(
-      `⚠️ Auto-online blocked for ${userData.name} | SEC already online: ${secGameId}`
-    );
-
-  } else {
-
-    //await addOnlineIDs(redis, group, [mainGameId]);
-
-    //onlineIds = await loadOnlineIDs(redis, group);
-   // isOnlineGame = isUserOnlineInRedis(userData, onlineIds);
-
-   // const ppm = getHeartbeatPPM(content);
-   // const activeCount = getNumericOnlineInstances(content).length;
-
-    //const autoOnlineEmbed = new EmbedBuilder()
-    //  .setColor(0x00ff88)
-   //   .setDescription(
-        //`🟢 ${member} was set **ONLINE automatically**.\n\n` +
-       // `Activated ID: \`${mainGameId}\`\n\n` +
-      //  `Detected **${activeCount} active instance${activeCount !== 1 ? "s" : ""}**, ` +
-      //  `**${ppm.toFixed(2)} PPM**, and valid type **Inject Wonderpick 96P+**.`
-     // );
-
-    //await userChannel.send({ embeds: [autoOnlineEmbed] }).catch(() => {});
-
-   // const publicChannelForOnline =
-     // guild.channels.cache.get(PUBLIC_ALERTS_CHANNEL_ID);
-
-   // if (publicChannelForOnline) {
-    //  await publicChannelForOnline
-     //   .send({ embeds: [autoOnlineEmbed] })
-    //    .catch(() => {});
-  //  }
-
-    //console.log(
-    //  `🟢 Auto-online activated for ${userData.name} | Main ID: ${mainGameId}`
-    //);
-  }
-}
-
-if (activeRivalDuoRole && !isRivalDuo) {
-  return;
-}
-const { count, hasMain } = parseOffline(content);
+      if (activeRivalDuoRole && !isRivalDuo) {
+        return;
+      }
+      const { count, hasMain } = parseOffline(content);
 
       if (isOnlineGame) {
         if (count > 0) {
@@ -1511,25 +1543,24 @@ const { count, hasMain } = parseOffline(content);
         }
       }
 
-const inactive =
-  isInactive(content) ||
-  !hasActiveHeartbeat(content);
+      const inactive =
+        isInactive(content) ||
+        !hasActiveHeartbeat(content);
 
-const timerKey = isRivalDuo && rivalDuoData
-  ? `${group}:rival_duo:${rivalDuoData.id}`
-  : `${group}:${discordId}`;
+      const timerKey = isRivalDuo && rivalDuoData
+        ? `${group}:rival_duo:${rivalDuoData.id}`
+        : `${group}:${discordId}`;
 
-if (inactive) {
-  const current = inactivityStreaks.get(timerKey) || 0;
-  inactivityStreaks.set(timerKey, current + 1);
-} else {
-  inactivityStreaks.delete(timerKey);
-}
+      if (inactive) {
+        const current = inactivityStreaks.get(timerKey) || 0;
+        inactivityStreaks.set(timerKey, current + 1);
+      } else {
+        inactivityStreaks.delete(timerKey);
+      }
 
-const inactivityCount =
-  inactivityStreaks.get(timerKey) || 0;
+      const inactivityCount = inactivityStreaks.get(timerKey) || 0;
 
-     if (inactive && inactivityCount >= 3) {
+      if (inactive && inactivityCount >= 3) {
         const freshOnlineIds = await loadOnlineIDs(redis, group);
         const stillOnline = isUserOnlineInRedis(userData, freshOnlineIds);
 
@@ -1553,94 +1584,87 @@ const inactivityCount =
               `Inactivity timer started. If activity does not return in **45 minutes**, you will be set offline.`
           });
 
- const interval = setInterval(async () => {
-const freshOnlineIds = await loadOnlineIDs(redis, group);
+          const interval = setInterval(async () => {
+            const freshOnlineIds = await loadOnlineIDs(redis, group);
+            let stillOnline = isUserOnlineInRedis(userData, freshOnlineIds);
 
-let stillOnline = isUserOnlineInRedis(userData, freshOnlineIds);
+            if (isRivalDuo && rivalDuoData) {
+              const freshDuo = await getRivalDuoById(redis, rivalDuoData.id);
+              stillOnline = freshDuo?.status === "online" && !!freshDuo.activeGameId;
+            }
 
-if (isRivalDuo && rivalDuoData) {
-  const freshDuo = await getRivalDuoById(redis, rivalDuoData.id);
-  stillOnline = freshDuo?.status === "online" && !!freshDuo.activeGameId;
-}
+            if (!stillOnline) {
+              clearTimeout(timeout);
+              clearInterval(interval);
+              crashTimers.delete(timerKey);
 
-  if (!stillOnline) {
-    clearTimeout(timeout);
-    clearInterval(interval);
-    crashTimers.delete(timerKey);
+              await userChannel.send({
+                content: `✅ ${member} Inactivity timer stopped because you are already offline.`
+              }).catch(() => {});
 
-    await userChannel.send({
-      content: `✅ ${member} Inactivity timer stopped because you are already offline.`
-    }).catch(() => {});
+              return;
+            }
 
-    return;
-  }
+            elapsed += UPDATE_INTERVAL;
+            const remaining = Math.max(0, Math.ceil((CRASH_TIMEOUT - elapsed) / 60000));
 
-  elapsed += UPDATE_INTERVAL;
-  const remaining = Math.max(0, Math.ceil((CRASH_TIMEOUT - elapsed) / 60000));
+            await userChannel.send({
+              content: `⏳ ${member} Inactivity countdown: **${remaining} minutes remaining**.`
+            }).catch(() => {});
+          }, UPDATE_INTERVAL);
 
-  await userChannel.send({
-    content:
-      `⏳ ${member} Inactivity countdown: **${remaining} minutes remaining**.`
-  }).catch(() => {});
-}, UPDATE_INTERVAL);
+          const timeout = setTimeout(async () => {
+            clearInterval(interval);
 
-const timeout = setTimeout(async () => {
-  clearInterval(interval);
+            const freshOnlineIds = await loadOnlineIDs(redis, group);
+            const stillOnline = isUserOnlineInRedis(userData, freshOnlineIds);
 
-  const freshOnlineIds = await loadOnlineIDs(redis, group);
-  const stillOnline = isUserOnlineInRedis(userData, freshOnlineIds);
+            if (!stillOnline) {
+              crashTimers.delete(timerKey);
 
-  if (!stillOnline) {
-    crashTimers.delete(timerKey);
+              await userChannel.send({
+                content: `✅ ${member} Inactivity timeout cancelled because you are already offline.`
+              }).catch(() => {});
 
-    await userChannel.send({
-      content: `✅ ${member} Inactivity timeout cancelled because you are already offline.`
-    }).catch(() => {});
+              return;
+            }
 
-    return;
-  }
+            if (isRivalDuo) {
+              const result = await setRivalDuoOffline(redis, discordId, "inactive_heartbeat");
 
-if (isRivalDuo) {
-  const result = await setRivalDuoOffline(redis, discordId, "inactive_heartbeat");
+              const red = new EmbedBuilder()
+                .setColor(0xFF0000)
+                .setDescription(`🚨 ${result.message}\nReason: inactivity detected in Rival Duo.`);
 
-  const red = new EmbedBuilder()
-    .setColor(0xFF0000)
-    .setDescription(`🚨 ${result.message}\nReason: inactivity detected in Rival Duo.`);
+              await userChannel.send({ embeds: [red] }).catch(() => {});
+              if (publicChannel) await publicChannel.send({ embeds: [red] }).catch(() => {});
 
-  await userChannel.send({ embeds: [red] }).catch(() => {});
-  if (publicChannel) await publicChannel.send({ embeds: [red] }).catch(() => {});
+              crashTimers.delete(timerKey);
+              return;
+            }
 
-  crashTimers.delete(timerKey);
-  return;
-}
+            const idsToRemove = getUserGameIds(userData);
+            await removeOnlineIDs(redis, group, idsToRemove);
 
-const idsToRemove = getUserGameIds(userData);
-await removeOnlineIDs(redis, group, idsToRemove);
+            const red = new EmbedBuilder()
+              .setColor(0xFF0000)
+              .setDescription(`🚨 ${member} has been set **OFFLINE due to inactivity**.`);
 
-const red = new EmbedBuilder()
-  .setColor(0xFF0000)
-  .setDescription(
-    `🚨 ${member} has been set **OFFLINE due to inactivity**.`
-  );
+            await userChannel.send({ embeds: [red] }).catch(() => {});
+            if (publicChannel) await publicChannel.send({ embeds: [red] }).catch(() => {});
 
-await userChannel.send({ embeds: [red] }).catch(() => {});
-if (publicChannel) await publicChannel.send({ embeds: [red] }).catch(() => {});
-
-crashTimers.delete(timerKey);
+            crashTimers.delete(timerKey);
           }, CRASH_TIMEOUT);
 
           crashTimers.set(timerKey, { timeout, interval });
         }
       } else {
-        if (
-  crashTimers.has(timerKey) &&
-  hasActiveHeartbeat(content)
-) {
+        if (crashTimers.has(timerKey) && hasActiveHeartbeat(content)) {
           const timer = crashTimers.get(timerKey);
 
           clearTimeout(timer.timeout);
           clearInterval(timer.interval);
-inactivityStreaks.delete(timerKey);
+          inactivityStreaks.delete(timerKey);
           crashTimers.delete(timerKey);
 
           await userChannel.send({
