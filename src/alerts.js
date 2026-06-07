@@ -1279,18 +1279,6 @@ module.exports = (client, options) => {
     GROUP_CONFIG,
     CHAMPION_ROLE_ID,
     PUBLIC_ALERTS_CHANNEL_ID,
-    GLOBAL_HEARTBEAT_CHANNEL_ID,
-    CATEGORY_ID,
-    redis
-  } = options;
-
-// ================= MAIN MODULE =================
-
-module.exports = (client, options) => {
-  const {
-    GROUP_CONFIG,
-    CHAMPION_ROLE_ID,
-    PUBLIC_ALERTS_CHANNEL_ID,
     redis
   } = options;
 
