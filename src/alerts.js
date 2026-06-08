@@ -1537,10 +1537,11 @@ module.exports = (client, options) => {
         content: `📡 **Heartbeat Update for ${userData.name || member.displayName}**\n🏷️ **Group:** ${config?.label || group}\n\n\`\`\`\n${content}\n\`\`\``
       });
 
+// CORRECCIÓN AQUÍ: Guardar el pulso de Rival Duo de forma segura
       if (isRivalDuo) {
         const freshDuo = await recordRivalDuoHeartbeat(redis, discordId, content);
         if (freshDuo) {
-          rivalDuoData = freshDuo; 
+          rivalDuoData = freshDuo; // Actualizamos la referencia local con los datos más frescos de Redis
           await handleRivalDuoDedicatedAlerts({
             redis, guild, client, duo: freshDuo,
             championRoleId: CHAMPION_ROLE_ID,
@@ -1553,12 +1554,16 @@ module.exports = (client, options) => {
       const publicChannel = guild.channels.cache.get(PUBLIC_ALERTS_CHANNEL_ID) || null;
       let onlineIds = await loadOnlineIDs(redis, group);
 
+      // Extraer la línea de Online para usuarios normales
       const onlineLine = content.split('\n').find(line => line.toLowerCase().includes('online:')) || '';
       const hasOnlineNumericInstances = /\d/.test(onlineLine);
 
+      // ====== CORRECCIÓN DE LOGICA INACTIVE =====
+      // Si es Rival Duo, evaluamos la salud usando estrictamente el rivalDuoData actualizado por Redis
       const inactive = isRivalDuo && rivalDuoData
         ? (getRivalDuoHealth(rivalDuoData).hasMissingActive || !hasActiveHeartbeat(content))
         : (!hasOnlineNumericInstances || !hasActiveHeartbeat(content));
+      // ===========================================
 
       const timerKey = isRivalDuo && rivalDuoData
         ? `${group}:rival_duo:${rivalDuoData.id}`
