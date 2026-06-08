@@ -1378,7 +1378,7 @@ module.exports = (client, options) => {
             if (userChannel) await userChannel.send({ embeds: [startEmbed] }).catch(() => {});
             if (publicChannel) await publicChannel.send({ embeds: [startEmbed] }).catch(() => {});
 
-            // Intervalo que actualiza el estado cada X tiempo (UPDATE_INTERVAL suele ser 15 o 30 segundos)
+            // Intervalo que actualiza el estado cada 5 minutos
             const interval = setInterval(async () => {
               const freshDuo = await getRivalDuoById(redis, duo.id);
               if (!freshDuo || freshDuo.status !== "online") {
@@ -1401,7 +1401,7 @@ module.exports = (client, options) => {
                 return;
               }
 
-              elapsed += (60 * 1000); // Avanzar de a 1 minuto que es cuando corre este escáner
+              elapsed += (5 * 60 * 1000); 
               const remaining = Math.max(0, Math.ceil((30 * 60 * 1000 - elapsed) / 60000));
 
               if (remaining % 5 === 0 && remaining > 0 && userChannel) { // Avisar cada 5 minutos para no spamear
@@ -1409,7 +1409,7 @@ module.exports = (client, options) => {
                   content: `⏳ **${displayRivalDuoName(duo)}** countdown: **${remaining} minutes remaining**.`
                 }).catch(() => {});
               }
-            }, 60 * 1000);
+            }, 5 * 60 * 1000);
 
             // Timeout finalizador a los 30 minutos
             const timeout = setTimeout(async () => {
@@ -1444,7 +1444,7 @@ module.exports = (client, options) => {
     }
     
     await checkRivalDuoHeartbeatTimeouts(redis);
-  }
+  } // <--- Cierre de checkAllHeartbeats() corregido
 
 // 3. HEARTBEAT PROCESSING ON MESSAGE CREATE
 // ================= MAIN MODULE =================
