@@ -1447,6 +1447,7 @@ module.exports = (client, options) => {
   }
 
   // 3. CAPTURA Y PROCESAMIENTO DE HEARTBEATS EN ENTRADA
+// 3. CAPTURA Y PROCESAMIENTO DE HEARTBEATS EN ENTRADA
   client.on("messageCreate", async (message) => {
     try {
       const group = getGroupByHeartbeatChannel(GROUP_CONFIG, message.channel.id);
@@ -1624,9 +1625,16 @@ module.exports = (client, options) => {
         }
       }
 
-      const inactive =
-        isInactive(content) ||
-        !hasActiveHeartbeat(content);
+      // ==========================================================
+      // LÓGICA DE INACTIVIDAD CORREGIDA (REVISIÓN DE INSTANCIAS NUMÉRICAS)
+      // ==========================================================
+      
+      // Contamos las instancias apagadas. Si tiene las 7 apagadas, significa que tiene 0 instancias numéricas corriendo.
+      const tieneCeroInstanciasNumericas = count >= 7; 
+
+      const inactive = isRivalDuo
+        ? (isInactive(content) || !hasActiveHeartbeat(content))
+        : (tieneCeroInstanciasNumericas || !hasActiveHeartbeat(content));
 
       const timerKey = isRivalDuo && rivalDuoData
         ? `${group}:rival_duo:${rivalDuoData.id}`
@@ -1643,7 +1651,12 @@ module.exports = (client, options) => {
 
       if (inactive && inactivityCount >= 3) {
         const freshOnlineIds = await loadOnlineIDs(redis, group);
-        const stillOnline = isUserOnlineInRedis(userData, freshOnlineIds);
+        let stillOnline = isUserOnlineInRedis(userData, freshOnlineIds);
+
+        if (isRivalDuo && rivalDuoData) {
+          const freshDuo = await getRivalDuoById(redis, rivalDuoData.id);
+          stillOnline = freshDuo?.status === "online";
+        }
 
         if (!stillOnline) {
           if (crashTimers.has(timerKey)) {
@@ -1652,7 +1665,6 @@ module.exports = (client, options) => {
             clearInterval(timer.interval);
             crashTimers.delete(timerKey);
           }
-
           return;
         }
 
@@ -1660,9 +1672,7 @@ module.exports = (client, options) => {
           let elapsed = 0;
 
           await userChannel.send({
-            content:
-              `⏳ ${member} No active numeric instances detected.\n` +
-              `Inactivity timer started. If activity does not return in **45 minutes**, you will be set offline.`
+            content: `⏳ ${member} **No active numeric instances detected.**\nInactivity timer started. If numeric instances do not return in **45 minutes**, you will be set offline.`
           });
 
           const interval = setInterval(async () => {
@@ -1682,7 +1692,6 @@ module.exports = (client, options) => {
               await userChannel.send({
                 content: `✅ ${member} Inactivity timer stopped because you are already offline.`
               }).catch(() => {});
-
               return;
             }
 
@@ -1698,27 +1707,32 @@ module.exports = (client, options) => {
             clearInterval(interval);
 
             const freshOnlineIds = await loadOnlineIDs(redis, group);
-            const stillOnline = isUserOnlineInRedis(userData, freshOnlineIds);
+            let stillOnline = isUserOnlineInRedis(userData, freshOnlineIds);
+
+            if (isRivalDuo && rivalDuoData) {
+              const freshDuo = await getRivalDuoById(redis, rivalDuoData.id);
+              stillOnline = freshDuo?.status === "online";
+            }
 
             if (!stillOnline) {
               crashTimers.delete(timerKey);
-
               await userChannel.send({
                 content: `✅ ${member} Inactivity timeout cancelled because you are already offline.`
               }).catch(() => {});
-
               return;
             }
+
+            const globalAlertsChannel = guild.channels.cache.get(PUBLIC_ALERTS_CHANNEL_ID);
 
             if (isRivalDuo) {
               const result = await setRivalDuoOffline(redis, discordId, "inactive_heartbeat");
 
-              const red = new EmbedBuilder()
+              const redDuo = new EmbedBuilder()
                 .setColor(0xFF0000)
-                .setDescription(`🚨 ${result.message}\nReason: inactivity detected in Rival Duo.`);
+                .setDescription(`🚨 **Rival Duo Offline**\n${result.message}\n\n*Reason:* 45 minutes without active numeric instances.`);
 
-              await userChannel.send({ embeds: [red] }).catch(() => {});
-              if (publicChannel) await publicChannel.send({ embeds: [red] }).catch(() => {});
+              await userChannel.send({ embeds: [redDuo] }).catch(() => {});
+              if (globalAlertsChannel) await globalAlertsChannel.send({ embeds: [redDuo] }).catch(() => {});
 
               crashTimers.delete(timerKey);
               return;
@@ -1727,12 +1741,12 @@ module.exports = (client, options) => {
             const idsToRemove = getUserGameIds(userData);
             await removeOnlineIDs(redis, group, idsToRemove);
 
-            const red = new EmbedBuilder()
+            const redNormal = new EmbedBuilder()
               .setColor(0xFF0000)
-              .setDescription(`🚨 ${member} has been set **OFFLINE due to inactivity**.`);
+              .setDescription(`🚨 ${member} has been set **OFFLINE due to having 0 numeric instances** for 45 minutes.`);
 
-            await userChannel.send({ embeds: [red] }).catch(() => {});
-            if (publicChannel) await publicChannel.send({ embeds: [red] }).catch(() => {});
+            await userChannel.send({ embeds: [redNormal] }).catch(() => {});
+            if (globalAlertsChannel) await globalAlertsChannel.send({ embeds: [redNormal] }).catch(() => {});
 
             crashTimers.delete(timerKey);
           }, CRASH_TIMEOUT);
@@ -1740,7 +1754,7 @@ module.exports = (client, options) => {
           crashTimers.set(timerKey, { timeout, interval });
         }
       } else {
-        if (crashTimers.has(timerKey) && hasActiveHeartbeat(content)) {
+        if (crashTimers.has(timerKey) && !inactive) {
           const timer = crashTimers.get(timerKey);
 
           clearTimeout(timer.timeout);
@@ -1749,7 +1763,7 @@ module.exports = (client, options) => {
           crashTimers.delete(timerKey);
 
           await userChannel.send({
-            content: `✅ ${member} Activity detected. Inactivity timer cancelled.`
+            content: `✅ ${member} Numeric instances detected. Inactivity timer cancelled.`
           }).catch(() => {});
         }
       }
