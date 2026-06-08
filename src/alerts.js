@@ -1446,8 +1446,7 @@ module.exports = (client, options) => {
     await checkRivalDuoHeartbeatTimeouts(redis);
   }
 
-  // 3. CAPTURA Y PROCESAMIENTO DE HEARTBEATS EN ENTRADA
-// 3. CAPTURA Y PROCESAMIENTO DE HEARTBEATS EN ENTRADA
+// 3. HEARTBEAT PROCESSING ON MESSAGE CREATE
   client.on("messageCreate", async (message) => {
     try {
       const group = getGroupByHeartbeatChannel(GROUP_CONFIG, message.channel.id);
@@ -1486,9 +1485,9 @@ module.exports = (client, options) => {
       }
 
       if (!entry) {
-        console.log(`⚠️ alerts.js no encontró usuario: "${heartbeatName}" en ${group}`);
+        console.log(`⚠️ alerts.js did not find user: "${heartbeatName}" in ${group}`);
         console.log(
-          "Usuarios disponibles:",
+          "Available users:",
           Object.values(users).slice(0, 10).map(u => ({
             name: u.name,
             heartbeatName: u.heartbeatName,
@@ -1523,7 +1522,7 @@ module.exports = (client, options) => {
         }
       }
 
-      // Guardamos la hora exacta en la que este usuario acaba de registrar actividad legítima
+      // Save the exact timestamp for legitimate activity tracking
       GLOBAL_LAST_HEARTBEAT_CACHE.set(String(discordId), Date.now());
 
       console.log(
@@ -1536,7 +1535,7 @@ module.exports = (client, options) => {
       const member = await guild.members.fetch(discordId).catch(() => null);
 
       if (!member) {
-        console.log(`⚠️ No se pudo fetch member ${discordId} para ${userData.name}`);
+        console.log(`⚠️ Could not fetch member ${discordId} for ${userData.name}`);
         return;
       }
 
@@ -1585,7 +1584,7 @@ module.exports = (client, options) => {
       const activeHeartbeat = hasActiveHeartbeat(content);
 
       if (isRivalDuo) {
-        // Rival Duo no hace auto-online
+        // Rival Duo does not auto-online
       } else if (!activeRivalDuoRole && !isOnlineGame && mainGameId && activeHeartbeat) {
         const secGameId = getSecGameId(userData);
 
@@ -1626,15 +1625,15 @@ module.exports = (client, options) => {
       }
 
       // ==========================================================
-      // LÓGICA DE INACTIVIDAD CORREGIDA (REVISIÓN DE INSTANCIAS NUMÉRICAS)
+      // INACTIVITY LOGIC (NUMERIC INSTANCES CHECK)
       // ==========================================================
       
-      // Contamos las instancias apagadas. Si tiene las 7 apagadas, significa que tiene 0 instancias numéricas corriendo.
-      const tieneCeroInstanciasNumericas = count >= 7; 
+      // If count is 7 or higher, it means 0 numeric instances are running
+      const hasZeroNumericInstances = count >= 7; 
 
       const inactive = isRivalDuo
         ? (isInactive(content) || !hasActiveHeartbeat(content))
-        : (tieneCeroInstanciasNumericas || !hasActiveHeartbeat(content));
+        : (hasZeroNumericInstances || !hasActiveHeartbeat(content));
 
       const timerKey = isRivalDuo && rivalDuoData
         ? `${group}:rival_duo:${rivalDuoData.id}`
