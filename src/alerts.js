@@ -889,41 +889,53 @@ async function handleRivalDuoDedicatedAlerts({
 }
 
 async function checkRivalDuoHeartbeatTimeouts(redis) {
-  const duos = await loadAllRivalDuos(redis)
-  const now = Date.now()
+  const duos = await loadAllRivalDuos(redis);
+  const now = Date.now();
 
   for (const duo of Object.values(duos)) {
-    if (!duo) continue
+    if (!duo) continue;
 
-    const members = getRivalDuoMembers(duo)
+    const members = getRivalDuoMembers(duo);
+    if (members.length < 2) continue;
+    if (duo.status !== "online") continue;
 
-    if (members.length < 2) continue
-    if (duo.status !== "online") continue
+    let totalStale = 0;
 
-    const staleMember = members.find(member => {
-      const last = Number(duo.lastHeartbeatAt?.[member.discordId] || 0)
+    // 1. Revisar de forma individual a cada miembro del dúo
+    for (const member of members) {
+      const last = Number(duo.lastHeartbeatAt?.[member.discordId] || 0);
+      
+      // Si el miembro excedió el tiempo límite permitido
+      if (!last || (now - last >= RIVAL_DUO_HEARTBEAT_TIMEOUT_MS)) {
+        totalStale++;
+        // Lo ponemos offline a él individualmente en lugar de tumbar todo el grupo
+        if (duo.onlineUsers) {
+          duo.onlineUsers[member.discordId] = false;
+        }
+      }
+    }
 
-      if (!last) return true
+    // 2. SOLO si AMBOS miembros están inactivos, procedemos a tirar el dúo completo
+    if (totalStale === members.length) {
+      await removeRivalDuoIdsFromElite(redis, duo);
 
-      return now - last >= RIVAL_DUO_HEARTBEAT_TIMEOUT_MS
-    })
+      duo.onlineUsers = {};
+      duo.activeGameId = null;
+      duo.activeDiscordId = null;
+      duo.status = "offline";
+      duo.offlineReason = "all_members_heartbeat_timeout";
+      duo.offlineAt = now;
 
-    if (!staleMember) continue
+      await saveRivalDuo(redis, duo);
 
-    await removeRivalDuoIdsFromElite(redis, duo)
-
-    duo.onlineUsers = {}
-    duo.activeGameId = null
-    duo.activeDiscordId = null
-    duo.status = "offline"
-    duo.offlineReason = `heartbeat_timeout_${staleMember.discordId}`
-    duo.offlineAt = now
-
-    await saveRivalDuo(redis, duo)
-
-    console.log(
-      `🔴 Rival Duo offline by heartbeat timeout: ${displayRivalDuoName(duo)} | stale user: ${staleMember.discordId}`
-    )
+      console.log(
+        `🔴 Rival Duo movido a OFFLINE completo (Ambos inactivos): ${displayRivalDuoName(duo)}`
+      );
+    } else if (totalStale > 0) {
+      // Si solo uno se cayó, guardamos el estado parcial para mantener al otro Online
+      await saveRivalDuo(redis, duo);
+      console.log(`⚠️ Un miembro de Rival Duo está inactivo, pero el grupo sigue ONLINE: ${displayRivalDuoName(duo)}`);
+    }
   }
 }
 
