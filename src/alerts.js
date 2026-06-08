@@ -1447,6 +1447,180 @@ module.exports = (client, options) => {
   }
 
 // 3. HEARTBEAT PROCESSING ON MESSAGE CREATE
+// ================= MAIN MODULE =================
+
+module.exports = (client, options) => {
+  const {
+    GROUP_CONFIG,
+    CHAMPION_ROLE_ID,
+    PUBLIC_ALERTS_CHANNEL_ID,
+    redis
+  } = options;
+
+  // Mapa interno para guardar la hora exacta del último pulso recibido por cada usuario/ID
+  const GLOBAL_LAST_HEARTBEAT_CACHE = new Map();
+
+  // 1. INICIALIZACIÓN DE TEMPORIZADORES CUANDO EL BOT SE CONECTA
+  client.once("ready", () => {
+    console.log("✅ alerts.js loaded");
+
+    // Ejecutar el escáner de inactividad estricto cada 5 minutos (Optimizado para Upstash)
+    setInterval(checkAllHeartbeats, 5 * 60 * 1000);
+
+    setInterval(
+      () => cleanOldMessages(client, null),
+      60 * 60 * 1000
+    );
+  });
+
+  // 2. FUNCIÓN ESCÁNER: REVISA LOS 40 MINUTOS GLOBAL Y EL MÍNIMO DE 6 INSTANCIAS EN RIVAL DUOS
+  async function checkAllHeartbeats() {
+    const now = Date.now();
+
+    for (const [group, config] of Object.entries(GROUP_CONFIG)) {
+      const guild = client.guilds.cache.get(config.guildId);
+      if (!guild) continue;
+
+      const onlineIds = await loadOnlineIDs(redis, group);
+      const users = await loadUsers(redis, group);
+
+      for (const [discordId, userData] of Object.entries(users)) {
+        if (isUserOnlineInRedis(userData, onlineIds)) {
+          const lastHbTime = GLOBAL_LAST_HEARTBEAT_CACHE.get(String(discordId));
+          
+          if (lastHbTime && (now - lastHbTime >= 40 * 60 * 1000)) {
+            const userGameIds = getUserGameIds(userData);
+            await removeOnlineIDs(redis, group, userGameIds);
+            
+            if (await hasActiveRivalDuoRole(redis, discordId)) {
+              await setRivalDuoOffline(redis, discordId, "heartbeat_missing_40min");
+            }
+            console.log(`🔴 [40 Min Timeout] Usuario ${userData.name || discordId} movido a OFFLINE inmediatamente por desaparecer.`);
+          }
+        }
+      }
+    }
+    
+    // CONTROL AUTOMÁTICO DE INSTANCIAS DE RIVAL DUOS (MÍNIMO 6)
+    const duos = await loadAllRivalDuos(redis);
+    for (const duo of Object.values(duos)) {
+      if (!duo || duo.status !== "online") continue;
+      
+      const config = GROUP_CONFIG["Elite_Four"];
+      if (!config) continue;
+
+      const guild = client.guilds.cache.get(config.guildId);
+      const publicChannel = guild?.channels.cache.get(PUBLIC_ALERTS_CHANNEL_ID);
+
+      if (guild) {
+        // Ejecutar la salud nativa del dúo
+        await handleRivalDuoDedicatedAlerts({
+          redis, guild, client, duo,
+          championRoleId: CHAMPION_ROLE_ID,
+          categoryId: config.categoryId,
+          group: "Elite_Four",
+          publicChannel
+        });
+
+        // REGLA DE ORO: Validar si cumplen con las 6 instancias usando la función que modificamos antes
+        const health = getRivalDuoHealth(duo);
+        const timerKey = `Elite_Four:rival_duo:${duo.id}`;
+
+        if (health.hasMissingActive) {
+          // Si no tiene el contador activo, lo iniciamos en este momento
+          if (!crashTimers.has(timerKey)) {
+            let elapsed = 0;
+            const members = getRivalDuoMembers(duo);
+            const firstMember = members[0];
+            
+            // Intentar obtener el canal personal del primer miembro para avisarles
+            const memberObj = await guild.members.fetch(firstMember.discordId).catch(() => null);
+            const userChannel = memberObj ? guild.channels.cache.find(c => c.name === `rival-${duo.id}`) : null;
+
+            const alertDetail = health.totalInstances < 6 
+              ? `Total instances dropped to **${health.totalInstances}/6**.` 
+              : `A member heartbeat is stale or missing active status.`;
+
+            const startEmbed = new EmbedBuilder()
+              .setColor(0xFFA500)
+              .setDescription(
+                `⚠️ Rival Duo **${displayRivalDuoName(duo)}** has an issue.\n\n` +
+                `🚨 *Detail:* ${alertDetail}\n\n` +
+                `Offline countdown started. If this is not fixed in **30 minutes**, both users will be set offline.`
+              );
+
+            if (userChannel) await userChannel.send({ embeds: [startEmbed] }).catch(() => {});
+            if (publicChannel) await publicChannel.send({ embeds: [startEmbed] }).catch(() => {});
+
+            // Intervalo que actualiza el estado cada 5 minutos
+            const interval = setInterval(async () => {
+              const freshDuo = await getRivalDuoById(redis, duo.id);
+              if (!freshDuo || freshDuo.status !== "online") {
+                clearTimeout(timeout);
+                clearInterval(interval);
+                crashTimers.delete(timerKey);
+                return;
+              }
+
+              const freshHealth = getRivalDuoHealth(freshDuo);
+              if (!freshHealth.hasMissingActive) {
+                clearTimeout(timeout);
+                clearInterval(interval);
+                crashTimers.delete(timerKey);
+                
+                const fixEmbed = new EmbedBuilder()
+                  .setColor(0x00FF88)
+                  .setDescription(`✅ Rival Duo **${displayRivalDuoName(duo)}** recovered requirements. Countdown stopped.`);
+                if (userChannel) await userChannel.send({ embeds: [fixEmbed] }).catch(() => {});
+                return;
+              }
+
+              elapsed += (5 * 60 * 1000); 
+              const remaining = Math.max(0, Math.ceil((30 * 60 * 1000 - elapsed) / 60000));
+
+              if (remaining % 5 === 0 && remaining > 0 && userChannel) { // Avisar cada 5 minutos para no spamear
+                await userChannel.send({
+                  content: `⏳ **${displayRivalDuoName(duo)}** countdown: **${remaining} minutes remaining**.`
+                }).catch(() => {});
+              }
+            }, 5 * 60 * 1000);
+
+            // Timeout finalizador a los 30 minutos
+            const timeout = setTimeout(async () => {
+              clearInterval(interval);
+              crashTimers.delete(timerKey);
+
+              const freshDuo = await getRivalDuoById(redis, duo.id);
+              if (freshDuo && freshDuo.status === "online") {
+                const result = await setRivalDuoOffline(redis, firstMember.discordId, "insufficient_instances");
+                
+                const red = new EmbedBuilder()
+                  .setColor(0xFF0000)
+                  .setDescription(`🚨 ${result.message}\nReason: Spent 30 minutes without fulfilling requirements (Minimum 6 active instances).`);
+
+                if (userChannel) await userChannel.send({ embeds: [red] }).catch(() => {});
+                if (publicChannel) await publicChannel.send({ embeds: [red] }).catch(() => {});
+              }
+            }, 30 * 60 * 1000);
+
+            crashTimers.set(timerKey, { timeout, interval });
+          }
+        } else {
+          // Si el dúo está totalmente sano, nos aseguramos de limpiar cualquier contador viejo
+          if (crashTimers.has(timerKey)) {
+            const timer = crashTimers.get(timerKey);
+            clearTimeout(timer.timeout);
+            clearInterval(timer.interval);
+            crashTimers.delete(timerKey);
+          }
+        }
+      }
+    }
+    
+    await checkRivalDuoHeartbeatTimeouts(redis);
+  } // <--- ¡AQUÍ ESTÁ EL CIERRE QUE FALTABA!
+
+  // 3. HEARTBEAT PROCESSING ON MESSAGE CREATE
   client.on("messageCreate", async (message) => {
     try {
       const group = getGroupByHeartbeatChannel(GROUP_CONFIG, message.channel.id);
@@ -1536,7 +1710,7 @@ module.exports = (client, options) => {
         content: `📡 **Heartbeat Update for ${userData.name || member.displayName}**\n🏷️ **Group:** ${config?.label || group}\n\n\`\`\`\n${content}\n\`\`\``
       });
 
-      if (isRivalDuo) {
+      if (isRivalDuo && freshDuo) {
         const freshDuo = await recordRivalDuoHeartbeat(redis, discordId, content);
         if (freshDuo) {
           rivalDuoData = freshDuo; // Keep reference fresh
