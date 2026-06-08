@@ -1290,7 +1290,7 @@ module.exports = (client, options) => {
     console.log("✅ alerts.js loaded");
 
     // Ejecutar el escáner de inactividad estricto cada 1 minuto
-    setInterval(checkAllHeartbeats, 60 * 1000);
+    setInterval(checkAllHeartbeats,5 * 60 * 1000);
 
     setInterval(
       () => cleanOldMessages(client, null),
