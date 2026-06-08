@@ -1621,6 +1621,7 @@ module.exports = (client, options) => {
   } // <--- ¡AQUÍ ESTÁ EL CIERRE QUE FALTABA!
 
   // 3. HEARTBEAT PROCESSING ON MESSAGE CREATE
+// 3. HEARTBEAT PROCESSING ON MESSAGE CREATE
   client.on("messageCreate", async (message) => {
     try {
       const group = getGroupByHeartbeatChannel(GROUP_CONFIG, message.channel.id);
@@ -1710,10 +1711,11 @@ module.exports = (client, options) => {
         content: `📡 **Heartbeat Update for ${userData.name || member.displayName}**\n🏷️ **Group:** ${config?.label || group}\n\n\`\`\`\n${content}\n\`\`\``
       });
 
-      if (isRivalDuo && freshDuo) {
+      // CORRECCIÓN AQUÍ: Guardar el pulso de Rival Duo de forma segura
+      if (isRivalDuo) {
         const freshDuo = await recordRivalDuoHeartbeat(redis, discordId, content);
         if (freshDuo) {
-          rivalDuoData = freshDuo; // Keep reference fresh
+          rivalDuoData = freshDuo; 
           await handleRivalDuoDedicatedAlerts({
             redis, guild, client, duo: freshDuo,
             championRoleId: CHAMPION_ROLE_ID,
@@ -1725,7 +1727,6 @@ module.exports = (client, options) => {
 
       const publicChannel = guild.channels.cache.get(PUBLIC_ALERTS_CHANNEL_ID) || null;
       let onlineIds = await loadOnlineIDs(redis, group);
-      let isOnlineGame = isUserOnlineInRedis(userData, onlineIds);
 
       // Extract the exact line that lists Online instances
       const onlineLine = content.split('\n').find(line => line.toLowerCase().includes('online:')) || '';
