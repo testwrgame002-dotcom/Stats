@@ -558,8 +558,13 @@ function getRivalDuoHealth(duo) {
 
     const isFresh = lastHeartbeat && (Date.now() - lastHeartbeat < RIVAL_DUO_HEARTBEAT_TIMEOUT_MS);
     
-    const memberTotal = Number(stats?.totalInstances || 0);
-    totalInstances += memberTotal;
+let memberTotal = 0;
+
+if (isFresh) {
+  memberTotal = Number(stats?.totalInstances || 0);
+}
+
+totalInstances += memberTotal;
 
     const hasActiveNumeric = stats?.hasActiveNumeric === true;
 
@@ -1296,7 +1301,6 @@ module.exports = (client, options) => {
   } = options;
 
   const GLOBAL_LAST_HEARTBEAT_CACHE = new Map();
-  const DUO_CRASH_TIMERS = new Map(); // Control pasivo para las 6 instancias de los duos
 
   // 1. INICIALIZACIÓN DE TEMPORIZADORES CUANDO EL BOT SE CONECTA
   client.once("ready", () => {
@@ -1335,75 +1339,33 @@ module.exports = (client, options) => {
         }
       }
     }
-    
-    // --- REGLA 2: CONTROL PASIVO DE 6 INSTANCIAS EN RIVAL DUOS ---
+
     const duos = await loadAllRivalDuos(redis).catch(() => ({}));
-    for (const duo of Object.values(duos)) {
-      if (!duo || duo.status !== "online") {
-        // Si el duo ya no está online, limpiamos cualquier rastreador existente
-        if (DUO_CRASH_TIMERS.has(duo.id)) DUO_CRASH_TIMERS.delete(duo.id);
-        continue;
-      }
-      
-      const config = GROUP_CONFIG["Elite_Four"];
-      if (!config) continue;
 
-      const guild = client.guilds.cache.get(config.guildId);
-      if (!guild) continue;
+for (const duo of Object.values(duos)) {
 
-      const health = getRivalDuoHealth(duo);
-      
-      // Si le faltan instancias activas (menos de 6)
-      if (health.hasMissingActive) {
-        if (!DUO_CRASH_TIMERS.has(duo.id)) {
-          // Guardamos el momento exacto en que el escáner detectó el fallo por primera vez
-          DUO_CRASH_TIMERS.set(duo.id, now);
-          
-          const members = getRivalDuoMembers(duo);
-          const userChannel = guild.channels.cache.find(c => c.name === `rival-${duo.id}`);
-          const alertDetail = health.totalInstances < 6 
-            ? `Total instances dropped to **${health.totalInstances}/6**.` 
-            : `A member heartbeat is missing active status.`;
+  if (!duo) continue;
+  if (duo.status !== "online") continue;
 
-          const warnEmbed = new EmbedBuilder()
-            .setColor(0xFFA500)
-            .setDescription(`⚠️ **Rival Duo ${displayRivalDuoName(duo)}:** ${alertDetail}\nTienen **30 minutos** para restaurar las 6 instancias antes de ser desconectados.`);
-          
-          if (userChannel) await userChannel.send({ embeds: [warnEmbed] }).catch(() => {});
-        } else {
-          // Si ya tenía una marca de fallo, verificamos si ya pasaron los 30 minutos de gracia
-          const firstDetected = DUO_CRASH_TIMERS.get(duo.id);
-          if (now - firstDetected >= 30 * 60 * 1000) {
-            DUO_CRASH_TIMERS.delete(duo.id);
-            
-            const members = getRivalDuoMembers(duo);
-            const firstMember = members[0];
-            const userChannel = guild.channels.cache.find(c => c.name === `rival-${duo.id}`);
-            const publicChannel = guild.channels.cache.get(PUBLIC_ALERTS_CHANNEL_ID);
+  const config = GROUP_CONFIG["Elite_Four"];
+  if (!config) continue;
 
-            // Ejecutamos la desconexión forzada en Redis
-            const result = await setRivalDuoOffline(redis, firstMember.discordId, "insufficient_instances");
-            
-            const redEmbed = new EmbedBuilder()
-              .setColor(0xFF0000)
-              .setDescription(`🚨 **Rival Duo Forzado Offline:** ${result.message}\n*Razón:* Pasaron 30 minutos sin cumplir el mínimo de 6 instancias activas.`);
+  const guild = client.guilds.cache.get(config.guildId);
+  if (!guild) continue;
 
-            if (userChannel) await userChannel.send({ embeds: [redEmbed] }).catch(() => {});
-            if (publicChannel) await publicChannel.send({ embeds: [redEmbed] }).catch(() => {});
-          }
-        }
-      } else {
-        // Si el duo está completamente sano, nos aseguramos de borrar su marca de fallo si tenía una
-        if (DUO_CRASH_TIMERS.has(duo.id)) {
-          DUO_CRASH_TIMERS.delete(duo.id);
-          const userChannel = guild.channels.cache.find(c => c.name === `rival-${duo.id}`);
-          if (userChannel) {
-            await userChannel.send({ content: `✅ **Rival Duo:** Requisitos recuperados (6 instancias activas). Cuenta regresiva cancelada.` }).catch(() => {});
-          }
-        }
-      }
-    }
+  await handleRivalDuoDedicatedAlerts({
+    redis,
+    guild,
+    client,
+    duo,
+    championRoleId: CHAMPION_ROLE_ID,
+    categoryId: config.categoryId,
+    group: "Elite_Four",
+    publicChannel: null
+  }).catch(console.error);
 
+}
+ 
     await checkRivalDuoHeartbeatTimeouts(redis).catch(() => {});
   }
 
