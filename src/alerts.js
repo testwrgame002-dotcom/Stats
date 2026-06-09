@@ -1134,9 +1134,21 @@ async function getOrCreatePersonalChannel({
     c.topic === topicTag
   );
 
-  if (userChannel) {
-    return userChannel;
+if (userChannel) {
+
+  if (String(userChannel.parentId) !== String(categoryId)) {
+
+    console.log(
+      `[PERSONAL CHANNEL] Moviendo ${userChannel.name} a categoría ${categoryId}`
+    );
+
+    await userChannel
+      .setParent(categoryId)
+      .catch(console.error);
   }
+
+  return userChannel;
+}
 
   // 2. Buscar canal viejo por nombre personal y permisos del usuario
   const possibleChannels = guild.channels.cache.filter(c =>
@@ -1152,16 +1164,22 @@ async function getOrCreatePersonalChannel({
       permission.allow.has(PermissionFlagsBits.ViewChannel);
 
     if (hasUserPermission) {
-      userChannel = channel;
+userChannel = channel;
 
-      // Reparar topic para evitar duplicados futuros
-      await userChannel.setTopic(topicTag).catch(() => {});
+await userChannel.setTopic(topicTag).catch(() => {});
 
-      console.log(
-        `♻️ Reusing old personal channel for ${userData.name || discordId}: #${userChannel.name}`
-      );
+if (String(userChannel.parentId) !== String(categoryId)) {
 
-      return userChannel;
+  console.log(
+    `[PERSONAL CHANNEL] Moviendo ${userChannel.name} a categoría ${categoryId}`
+  );
+
+  await userChannel
+    .setParent(categoryId)
+    .catch(console.error);
+}
+
+return userChannel;
     }
   }
 
@@ -1203,7 +1221,9 @@ async function getOrCreatePersonalChannel({
   if (existingAfterFetch) {
     return existingAfterFetch;
   }
-    
+    console.log(
+  `[PERSONAL CHANNEL] Creando canal nuevo para ${member.user.tag}`
+);
   userChannel = await guild.channels.create({
     name: desiredName,
     type: ChannelType.GuildText,
