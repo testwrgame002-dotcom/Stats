@@ -241,7 +241,14 @@ const RIVAL_DUO_GRACE_MS = 15 * 60 * 1000
 const RIVAL_DUO_CRASH_TIMEOUT = 30 * 60 * 1000
 const RIVAL_DUO_UPDATE_INTERVAL = 10 * 60 * 1000
 const RIVAL_DUO_REQUIRED_TOTAL_INSTANCES = 6
+const NORMAL_REQUIRED_INSTANCES = 2;
+const NORMAL_OFFLINE_TIMEOUT = 45 * 60 * 1000;
+const NORMAL_UPDATE_INTERVAL = 10 * 60 * 1000;
 const RIVAL_DUO_HEARTBEAT_TIMEOUT_MS = 45 * 60 * 1000;
+
+function getNormalUserInstances(content) {
+  return getNumericOnlineInstances(content).length;
+}
 
 function parseRivalJson(value, fallback = {}) {
   try {
@@ -296,7 +303,141 @@ function rivalNamesMatch(a, b) {
 
   return false
 }
+async function startNormalUserOfflineTimer({
+  redis,
+  guild,
+  client,
+  member,
+  userData,
+  discordId,
+  group,
+  currentContent,
+  championRoleId
+}) {
 
+  const timerKey = `normal_user_alert:${discordId}`;
+
+  if (crashTimers.has(timerKey)) return;
+
+  let elapsed = 0;
+
+  const userChannel = await getOrCreatePersonalChannel({
+    guild,
+    client,
+    member,
+    userData,
+    discordId,
+    championRoleId,
+    categoryId: null,
+    group
+  });
+
+  await userChannel.send({
+    embeds: [
+      new EmbedBuilder()
+        .setColor(0xFFA500)
+        .setDescription(
+  `⚠️ Less than ${NORMAL_REQUIRED_INSTANCES} active instances detected.\n\n` +
+`If you do not recover your instances within 45 minutes, you will be set OFFLINE.`
+        )
+    ]
+  }).catch(() => {});
+
+  const interval = setInterval(async () => {
+
+    const lastContent =
+      client.lastHeartbeatContent?.get(String(discordId));
+
+    const currentInstances =
+      getNormalUserInstances(lastContent || "");
+
+    if (currentInstances >= NORMAL_REQUIRED_INSTANCES) {
+
+      clearTimeout(timeout);
+      clearInterval(interval);
+      crashTimers.delete(timerKey);
+
+      await userChannel.send({
+        embeds: [
+          new EmbedBuilder()
+            .setColor(0x00ff88)
+            .setDescription(
+          `✅ Active instances recovered.\n` +
+`Countdown cancelled.`
+            )
+        ]
+      }).catch(() => {});
+
+      return;
+    }
+
+    elapsed += NORMAL_UPDATE_INTERVAL;
+
+    const remaining =
+      Math.max(
+        0,
+        Math.ceil(
+          (NORMAL_OFFLINE_TIMEOUT - elapsed) / 60000
+        )
+      );
+
+    await userChannel.send({
+      embeds: [
+        new EmbedBuilder()
+          .setColor(0xFFA500)
+          .setDescription(
+`⏳ You are still below ${NORMAL_REQUIRED_INSTANCES} active instances.\n` +
+`Time remaining: ${remaining} minutes.`
+          )
+      ]
+    }).catch(() => {});
+
+  }, NORMAL_UPDATE_INTERVAL);
+
+  const timeout = setTimeout(async () => {
+
+    clearInterval(interval);
+
+    const lastContent =
+      client.lastHeartbeatContent?.get(String(discordId));
+
+    const currentInstances =
+      getNormalUserInstances(lastContent || "");
+
+    if (currentInstances >= NORMAL_REQUIRED_INSTANCES) {
+
+      crashTimers.delete(timerKey);
+      return;
+    }
+
+    const userGameIds = getUserGameIds(userData);
+
+    await removeOnlineIDs(
+      redis,
+      group,
+      userGameIds
+    );
+
+    await userChannel.send({
+      embeds: [
+        new EmbedBuilder()
+          .setColor(0xFF0000)
+          .setDescription(
+`🚨 You have been set OFFLINE.\n` +
+`Reason: fewer than ${NORMAL_REQUIRED_INSTANCES} active instances for 45 minutes.`
+          )
+      ]
+    }).catch(() => {});
+
+    crashTimers.delete(timerKey);
+
+  }, NORMAL_OFFLINE_TIMEOUT);
+
+  crashTimers.set(timerKey, {
+    timeout,
+    interval
+  });
+}
 async function loadAllRivalDuos(redis) {
   try {
     const data = await redis.hgetall(RIVAL_DUOS_KEY)
@@ -1446,6 +1587,15 @@ for (const duo of Object.values(duos)) {
 
       GLOBAL_LAST_HEARTBEAT_CACHE.set(String(discordId), Date.now());
 
+      if (!client.lastHeartbeatContent) {
+  client.lastHeartbeatContent = new Map();
+}
+
+client.lastHeartbeatContent.set(
+  String(discordId),
+  content
+);
+
       const guild = message.guild;
       if (!guild) return;
 
@@ -1476,6 +1626,27 @@ for (const duo of Object.values(duos)) {
           }).catch(() => {});
         }
       }
+      else {
+
+const activeInstances =
+  getNumericOnlineInstances(content).length;
+
+if (activeInstances <= 2) {
+
+    await startNormalUserOfflineTimer({
+      redis,
+      guild,
+      client,
+      member,
+      userData,
+      discordId,
+      group,
+      currentContent: content,
+      championRoleId: CHAMPION_ROLE_ID
+    });
+
+  }
+}
 
     } catch (err) {
       console.error("🔥 alerts.js error:", err);
