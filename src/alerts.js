@@ -8,6 +8,8 @@ const MESSAGE_LIFETIME = 12 * 60 * 60 * 1000;
 const CRASH_TIMEOUT = 45 * 60 * 1000;
 const UPDATE_INTERVAL = 10 * 60 * 1000;
 
+const PERSONAL_CHANNELS_CATEGORY_ID = "1488253270068691045";
+
 const crashTimers = new Map();
 const USERS_CACHE = new Map();
 const USERS_CACHE_TTL = 5 * 60 * 1000;
@@ -1136,16 +1138,15 @@ async function getOrCreatePersonalChannel({
 
 if (userChannel) {
 
-  if (String(userChannel.parentId) !== String(categoryId)) {
+if (
+  PERSONAL_CHANNELS_CATEGORY_ID &&
+  String(userChannel.parentId) !== String(PERSONAL_CHANNELS_CATEGORY_ID)
+) {
 
-    console.log(
-      `[PERSONAL CHANNEL] Moviendo ${userChannel.name} a categoría ${categoryId}`
-    );
-
-    await userChannel
-      .setParent(categoryId)
-      .catch(console.error);
-  }
+  await userChannel
+    .setParent(PERSONAL_CHANNELS_CATEGORY_ID)
+    .catch(console.error);
+}
 
   return userChannel;
 }
@@ -1168,14 +1169,13 @@ userChannel = channel;
 
 await userChannel.setTopic(topicTag).catch(() => {});
 
-if (String(userChannel.parentId) !== String(categoryId)) {
-
-  console.log(
-    `[PERSONAL CHANNEL] Moviendo ${userChannel.name} a categoría ${categoryId}`
-  );
+if (
+  PERSONAL_CHANNELS_CATEGORY_ID &&
+  String(userChannel.parentId) !== String(PERSONAL_CHANNELS_CATEGORY_ID)
+) {
 
   await userChannel
-    .setParent(categoryId)
+    .setParent(PERSONAL_CHANNELS_CATEGORY_ID)
     .catch(console.error);
 }
 
@@ -1221,16 +1221,17 @@ return userChannel;
   if (existingAfterFetch) {
     return existingAfterFetch;
   }
-    console.log(
-  `[PERSONAL CHANNEL] Creando canal nuevo para ${member.user.tag}`
+
+  console.log(
+  `[PERSONAL CHANNEL] categoryId=${categoryId} group=${group}`
 );
-  userChannel = await guild.channels.create({
+userChannel = await guild.channels.create({
     name: desiredName,
     type: ChannelType.GuildText,
     topic: topicTag,
-    parent: categoryId,
+    parent: PERSONAL_CHANNELS_CATEGORY_ID,
     permissionOverwrites: overwrites
-  });
+});
 
   console.log(`✅ Personal channel created for ${userData.name || discordId} (${group})`);
 
