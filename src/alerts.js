@@ -240,7 +240,7 @@ const RIVAL_DUO_BY_USER_KEY = "rival_duo_by_user"
 const RIVAL_DUO_GRACE_MS = 15 * 60 * 1000
 const RIVAL_DUO_CRASH_TIMEOUT = 30 * 60 * 1000
 const RIVAL_DUO_UPDATE_INTERVAL = 10 * 60 * 1000
-const RIVAL_DUO_REQUIRED_TOTAL_INSTANCES = 6
+const RIVAL_DUO_REQUIRED_TOTAL_INSTANCES = 5
 const NORMAL_REQUIRED_INSTANCES = 2;
 const NORMAL_OFFLINE_TIMEOUT = 45 * 60 * 1000;
 const NORMAL_UPDATE_INTERVAL = 10 * 60 * 1000;
@@ -344,7 +344,14 @@ async function startNormalUserOfflineTimer({
   }).catch(() => {});
 
   const interval = setInterval(async () => {
+const onlineIds = await loadOnlineIDs(redis, group);
 
+if (!isUserOnlineInRedis(userData, onlineIds)) {
+  clearTimeout(timeout);
+  clearInterval(interval);
+  crashTimers.delete(timerKey);
+  return;
+}
     const lastContent =
       client.lastHeartbeatContent?.get(String(discordId));
 
@@ -398,6 +405,12 @@ async function startNormalUserOfflineTimer({
 
     clearInterval(interval);
 
+    const onlineIds = await loadOnlineIDs(redis, group);
+
+if (!isUserOnlineInRedis(userData, onlineIds)) {
+  crashTimers.delete(timerKey);
+  return;
+}
     const lastContent =
       client.lastHeartbeatContent?.get(String(discordId));
 
@@ -579,6 +592,7 @@ async function activateRivalDuoId(redis, duo, force = false) {
     duo.lastRotationAt = now
     duo.activeIndex = (index + 1) % members.length
     duo.status = "online"
+    if (!duo.onlineSinceAt) duo.onlineSinceAt = Date.now();
 
     await redis.sadd("online:Elite_Four", activeMember.gameId)
     await saveRivalDuo(redis, duo)
@@ -642,9 +656,10 @@ async function setRivalDuoOffline(redis, discordId, reason = "offline") {
   duo.onlineUsers = {}
   duo.activeGameId = null
   duo.activeDiscordId = null
-  duo.status = "offline"
-  duo.offlineReason = reason
-  duo.offlineAt = Date.now()
+duo.status = "offline"
+duo.offlineReason = reason
+duo.offlineAt = Date.now()
+duo.onlineSinceAt = null
 
   await saveRivalDuo(redis, duo)
 
@@ -691,41 +706,47 @@ duo.lastHeartbeatStats[String(discordId)] = {
 // CÁMBIALO PARA QUE QUEDE ASÍ:
 function getRivalDuoHealth(duo) {
   const members = getRivalDuoMembers(duo);
-  let totalInstances = 0;
-  let missingActive = [];
-  let missingHeartbeat = [];
+
+  let totalActiveInstances = 0;
+  const missingActive = [];
+  const missingHeartbeat = [];
+
+  const now = Date.now();
 
   for (const member of members) {
     const stats = duo.lastHeartbeatStats?.[member.discordId];
     const lastHeartbeat = Number(duo.lastHeartbeatAt?.[member.discordId] || 0);
 
-    const isFresh = lastHeartbeat && (Date.now() - lastHeartbeat < RIVAL_DUO_HEARTBEAT_TIMEOUT_MS);
-    
-let memberTotal = 0;
-
-if (isFresh) {
-  memberTotal = Number(stats?.totalInstances || 0);
-}
-
-totalInstances += memberTotal;
-
-    const hasActiveNumeric = stats?.hasActiveNumeric === true;
+    const isFresh =
+      lastHeartbeat &&
+      now - lastHeartbeat < RIVAL_DUO_HEARTBEAT_TIMEOUT_MS;
 
     if (!isFresh) {
       missingHeartbeat.push(member);
-    } else if (!hasActiveNumeric) {
+      continue;
+    }
+
+    const activeInstances = Number(stats?.activeInstances || 0);
+    totalActiveInstances += activeInstances;
+
+    if (activeInstances <= 0) {
       missingActive.push(member);
     }
   }
 
   return {
     members,
-    totalInstances,
+    totalActiveInstances,
     missingActive,
     missingHeartbeat,
-    // Activa la alerta si faltan bots, instancias activas, O si el total combinado es menor a 6
-    hasMissingActive: missingActive.length > 0 || missingHeartbeat.length > 0 || totalInstances < RIVAL_DUO_REQUIRED_TOTAL_INSTANCES,
-    hasEnoughTotalInstances: totalInstances >= RIVAL_DUO_REQUIRED_TOTAL_INSTANCES
+
+    hasMissingActive:
+      missingHeartbeat.length > 0 ||
+      missingActive.length > 0 ||
+      totalActiveInstances < RIVAL_DUO_REQUIRED_ACTIVE_INSTANCES,
+
+    hasEnoughActiveInstances:
+      totalActiveInstances >= RIVAL_DUO_REQUIRED_ACTIVE_INSTANCES
   };
 }
 // CÁMBIALO PARA QUE QUEDE ASÍ:
@@ -834,9 +855,9 @@ const startEmbed = new EmbedBuilder()
 
     const health = getRivalDuoHealth(freshDuo);
 
-    const fixed =
-      !health.hasMissingActive &&
-      health.hasEnoughTotalInstances;
+const fixed =
+  !health.hasMissingActive &&
+  health.hasEnoughActiveInstances;
 
     if (fixed) {
       clearTimeout(timeout);
@@ -898,9 +919,9 @@ const startEmbed = new EmbedBuilder()
 
     const health = getRivalDuoHealth(freshDuo);
 
-    const fixed =
-      !health.hasMissingActive &&
-      health.hasEnoughTotalInstances;
+const fixed =
+  !health.hasMissingActive &&
+  health.hasEnoughActiveInstances;
 
     if (fixed) {
       crashTimers.delete(timerKey);
@@ -912,9 +933,10 @@ const startEmbed = new EmbedBuilder()
     freshDuo.onlineUsers = {};
     freshDuo.activeGameId = null;
     freshDuo.activeDiscordId = null;
-    freshDuo.status = "offline";
-    freshDuo.offlineReason = reason;
-    freshDuo.offlineAt = Date.now();
+ duo.status = "offline"
+duo.offlineReason = reason
+duo.offlineAt = Date.now()
+duo.onlineSinceAt = null
 
     await saveRivalDuo(redis, freshDuo);
 
@@ -959,11 +981,17 @@ async function handleRivalDuoDedicatedAlerts({
   if (members.length < 2) return;
 
   // Si acaban de ponerse online, no hacemos nada hasta que pase el tiempo de gracia (15 minutos)
-  if (!duo.lastRotationAt) return;
-  const onlineFor = Date.now() - Number(duo.lastRotationAt || 0);
-  if (onlineFor < RIVAL_DUO_GRACE_MS) {
-    return; 
-  }
+if (!duo.onlineSinceAt) {
+  duo.onlineSinceAt = Date.now();
+  await saveRivalDuo(redis, duo);
+  return;
+}
+
+const onlineFor = Date.now() - Number(duo.onlineSinceAt || 0);
+
+if (onlineFor < RIVAL_DUO_GRACE_MS) {
+  return;
+}
 
   const health = getRivalDuoHealth(duo);
 
@@ -1016,7 +1044,7 @@ async function handleRivalDuoDedicatedAlerts({
   }
 
   // 3. TERCERA ALERTA: Las instancias activas e inactivas de ambos no suman 6 en total
-  if (!health.hasEnoughTotalInstances) {
+  if (!health.hasEnoughActiveInstances) {
     await startRivalDuoOfflineTimer({
       redis,
       guild,
@@ -1024,8 +1052,8 @@ async function handleRivalDuoDedicatedAlerts({
       duo,
       reason: "rival_duo_not_enough_total_instances",
       detail:
-        `Rival Duo requiere un mínimo de **6 instancias numéricas totales** para permanecer en Elite Four.\n` +
-        `Total actual detectado en el sistema: **${health.totalInstances}/${RIVAL_DUO_REQUIRED_TOTAL_INSTANCES}**.`,
+        `Rival Duo requires at least **${RIVAL_DUO_REQUIRED_ACTIVE_INSTANCES} active numeric instances** combined to stay online.\n` +
+`Current active instances detected: **${health.totalActiveInstances}/${RIVAL_DUO_REQUIRED_ACTIVE_INSTANCES}**.`,
       championRoleId,
       categoryId,
       group,
@@ -1070,9 +1098,10 @@ async function checkRivalDuoHeartbeatTimeouts(redis) {
       duo.onlineUsers = {};
       duo.activeGameId = null;
       duo.activeDiscordId = null;
-      duo.status = "offline";
-      duo.offlineReason = "all_members_heartbeat_timeout";
-      duo.offlineAt = now;
+duo.status = "offline"
+duo.offlineReason = reason
+duo.offlineAt = Date.now()
+duo.onlineSinceAt = null
 
       await saveRivalDuo(redis, duo);
 
@@ -1528,7 +1557,7 @@ for (const duo of Object.values(duos)) {
 
 }
  
-    await checkRivalDuoHeartbeatTimeouts(redis).catch(() => {});
+   // await checkRivalDuoHeartbeatTimeouts(redis).catch(() => {});
   }
 
   // 3. HEARTBEAT PROCESSING ON MESSAGE CREATE (PASIVO - SIN TIMERS)
@@ -1631,7 +1660,7 @@ client.lastHeartbeatContent.set(
 const activeInstances =
   getNumericOnlineInstances(content).length;
 
-if (activeInstances <= 2) {
+if (activeInstances < NORMAL_REQUIRED_INSTANCES) {
 
     await startNormalUserOfflineTimer({
       redis,
