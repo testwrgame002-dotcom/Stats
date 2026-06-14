@@ -240,7 +240,7 @@ const RIVAL_DUO_BY_USER_KEY = "rival_duo_by_user"
 const RIVAL_DUO_GRACE_MS = 15 * 60 * 1000
 const RIVAL_DUO_CRASH_TIMEOUT = 30 * 60 * 1000
 const RIVAL_DUO_UPDATE_INTERVAL = 10 * 60 * 1000
-const RIVAL_DUO_REQUIRED_TOTAL_INSTANCES = 5
+const RIVAL_DUO_REQUIRED_ACTIVE_INSTANCES = 5
 const NORMAL_REQUIRED_INSTANCES = 2;
 const NORMAL_OFFLINE_TIMEOUT = 45 * 60 * 1000;
 const NORMAL_UPDATE_INTERVAL = 10 * 60 * 1000;
@@ -608,8 +608,11 @@ async function activateRivalDuoId(redis, duo, force = false) {
     }
   }
 
-  await redis.sadd("online:Elite_Four", duo.activeGameId)
-  await saveRivalDuo(redis, duo)
+await redis.sadd("online:Elite_Four", duo.activeGameId)
+
+if (!duo.onlineSinceAt) duo.onlineSinceAt = Date.now();
+
+await saveRivalDuo(redis, duo)
 
   return {
     ok: true,
@@ -930,15 +933,15 @@ const fixed =
 
     await removeRivalDuoIdsFromElite(redis, freshDuo);
 
-    freshDuo.onlineUsers = {};
-    freshDuo.activeGameId = null;
-    freshDuo.activeDiscordId = null;
- duo.status = "offline"
-duo.offlineReason = reason
-duo.offlineAt = Date.now()
-duo.onlineSinceAt = null
+freshDuo.onlineUsers = {};
+freshDuo.activeGameId = null;
+freshDuo.activeDiscordId = null;
+freshDuo.status = "offline";
+freshDuo.offlineReason = reason;
+freshDuo.offlineAt = Date.now();
+freshDuo.onlineSinceAt = null;
 
-    await saveRivalDuo(redis, freshDuo);
+await saveRivalDuo(redis, freshDuo);
 
     const offlineEmbed = new EmbedBuilder()
       .setColor(0xFF0000)
@@ -994,6 +997,9 @@ if (onlineFor < RIVAL_DUO_GRACE_MS) {
 }
 
   const health = getRivalDuoHealth(duo);
+  console.log(
+  `[RIVAL DUO CHECK] ${displayRivalDuoName(duo)} | active=${health.totalActiveInstances}/${RIVAL_DUO_REQUIRED_ACTIVE_INSTANCES} | missingHeartbeat=${health.missingHeartbeat.length} | missingActive=${health.missingActive.length}`
+);
 
   // 1. PRIORIDAD: Detectar si hay bots completamente apagados (Sin enviar heartbeat)
   if (health.missingHeartbeat.length > 0) {
@@ -1098,10 +1104,10 @@ async function checkRivalDuoHeartbeatTimeouts(redis) {
       duo.onlineUsers = {};
       duo.activeGameId = null;
       duo.activeDiscordId = null;
-duo.status = "offline"
-duo.offlineReason = reason
-duo.offlineAt = Date.now()
-duo.onlineSinceAt = null
+duo.status = "offline";
+duo.offlineReason = "all_members_heartbeat_timeout";
+duo.offlineAt = Date.now();
+duo.onlineSinceAt = null;
 
       await saveRivalDuo(redis, duo);
 
