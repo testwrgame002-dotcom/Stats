@@ -729,7 +729,7 @@ for (const duo of duoPanelStats) {
     `⚡ ${duo.ppm.toFixed(2)} | 🀄️ ${duo.packs} | ⏱ ${duo.time} | 🖥️ ${duo.onlineCount} | 💤 ${duo.offlineCount}`
   );
 }
-  }
+  
 
   // ================= ORDENAMIENTO POR PACKS (Mayor a Menor) =================
   processedOnlineUsers.sort((a, b) => b.stats.packs - a.stats.packs);
