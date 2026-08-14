@@ -560,13 +560,14 @@ function countDuoInstances(stats) {
   }
 }
 
-async function buildRivalDuoStatsForPanel(messages) {
+async function buildRivalDuoStatsForPanel(messages, group) {
   const duos = await loadAllRivalDuos()
   const result = []
 
   for (const duo of Object.values(duos)) {
     if (!duo) continue
     if (duo.status !== "online") continue
+    if (duo.activeGroup !== group) continue;
     if (!duo.activeGameId) continue
 
     const members = getRivalDuoMembers(duo)
@@ -701,29 +702,33 @@ async function generatePanel(group) {
     }
   }
 
-  // ================= SECCIÓN DE RIVAL DUO =================
-  const onlineDuoLines = []; // Guardará las líneas de texto de las duplas directamente
+// ================= SECCIÓN DE RIVAL DUO =================
+const onlineDuoLines = [];
 
-  if (group === "Elite_Four") {
-    const duoPanelStats = await buildRivalDuoStatsForPanel(messages);
+const duoPanelStats = await buildRivalDuoStatsForPanel(messages, group);
 
-    for (const duo of duoPanelStats) {
-      onlineStats.push({
-        ppm: duo.ppm,
-        packs: duo.packs,
-        time: duo.time,
-        online: Array.from({ length: duo.onlineCount }, (_, i) => String(i + 1)),
-        offline: duo.offlineCount > 0
-          ? Array.from({ length: duo.offlineCount }, (_, i) => String(i + 1))
-          : ["none"]
-      });
+for (const duo of duoPanelStats) {
+  onlineStats.push({
+    ppm: duo.ppm,
+    packs: duo.packs,
+    time: duo.time,
+    online: Array.from(
+      { length: duo.onlineCount },
+      (_, i) => String(i + 1)
+    ),
+    offline: duo.offlineCount > 0
+      ? Array.from(
+          { length: duo.offlineCount },
+          (_, i) => String(i + 1)
+        )
+      : ["none"]
+  });
 
-      // Añadimos las duplas a un array separado (si quieres ordenarlas junto con los usuarios online, avísame)
-      onlineDuoLines.push(
-        `🤝 **${duo.name}**\n` +
-        `⚡ ${duo.ppm.toFixed(2)} | 🀄️ ${duo.packs} | ⏱ ${duo.time} | 🖥️ ${duo.onlineCount} | 💤 ${duo.offlineCount}`
-      );
-    }
+  onlineDuoLines.push(
+    `🤝 **${duo.name}**\n` +
+    `⚡ ${duo.ppm.toFixed(2)} | 🀄️ ${duo.packs} | ⏱ ${duo.time} | 🖥️ ${duo.onlineCount} | 💤 ${duo.offlineCount}`
+  );
+}
   }
 
   // ================= ORDENAMIENTO POR PACKS (Mayor a Menor) =================
