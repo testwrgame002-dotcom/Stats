@@ -371,8 +371,7 @@ function findLastMessagesForUserAliases(messages, userData) {
 
     if (!normalizedHeartbeatName) continue;
 
-    // Si el heartbeat pertenece a este usuario,
-    // conservamos TODOS sus heartbeats.
+    // Conservamos TODOS los heartbeats que pertenezcan al mismo usuario.
     if (candidates.includes(normalizedHeartbeatName)) {
       foundMessages.push(msg);
     }
@@ -381,16 +380,45 @@ function findLastMessagesForUserAliases(messages, userData) {
   return foundMessages;
 }
 
+function mergeStatsFromMessages(messages) {
+  const merged = {
+    time: "0",
+    packs: 0,
+    ppm: 0,
+    online: [],
+    offline: []
+  };
 
+  for (const msg of messages) {
+    const content = getMessageText(msg);
+    const stats = parseStats(content);
 
-  const uniqueMessages = new Map();
+    merged.ppm += Number(stats.ppm) || 0;
+    merged.packs += Number(stats.packs) || 0;
 
-  for (const msg of foundByName.values()) {
-    uniqueMessages.set(msg.id, msg);
+    if (stats.time && stats.time !== "0") {
+      merged.time = stats.time;
+    }
+
+    if (Array.isArray(stats.online)) {
+      merged.online.push(...stats.online);
+    }
+
+    if (Array.isArray(stats.offline) && !stats.offline.includes("none")) {
+      merged.offline.push(...stats.offline);
+    }
   }
 
-  return Array.from(uniqueMessages.values());
+  merged.ppm = Number(merged.ppm.toFixed(2));
+
+  if (!merged.offline.length) {
+    merged.offline = ["none"];
+  }
+
+  return merged;
 }
+
+
 
 function mergeStatsFromMessages(messages) {
   const merged = {
