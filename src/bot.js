@@ -350,11 +350,17 @@ function findLastUserMessageForUser(messages, userData) {
   return null;
 }
 
+
 function findLastMessagesForUserAliases(messages, userData) {
   if (!messages || !Array.isArray(messages)) return [];
 
-  const candidates = getUserNameCandidates(userData);
-  const foundByName = new Map();
+  const candidates = getUserNameCandidates(userData)
+    .map(x => normalizeHeartbeatName(x))
+    .filter(Boolean);
+
+  if (!candidates.length) return [];
+
+  const foundMessages = [];
 
   for (const msg of messages) {
     const content = getMessageText(msg);
@@ -365,18 +371,17 @@ function findLastMessagesForUserAliases(messages, userData) {
 
     if (!normalizedHeartbeatName) continue;
 
-    for (const candidate of candidates) {
-      const normalizedCandidate = normalizeHeartbeatName(candidate);
-
-      if (!normalizedCandidate) continue;
-
-      if (namesMatch(heartbeatName, candidate)) {
-        if (!foundByName.has(normalizedCandidate)) {
-          foundByName.set(normalizedCandidate, msg);
-        }
-      }
+    // Si el heartbeat pertenece a este usuario,
+    // conservamos TODOS sus heartbeats.
+    if (candidates.includes(normalizedHeartbeatName)) {
+      foundMessages.push(msg);
     }
   }
+
+  return foundMessages;
+}
+
+
 
   const uniqueMessages = new Map();
 
@@ -400,24 +405,27 @@ function mergeStatsFromMessages(messages) {
     const content = getMessageText(msg);
     const stats = parseStats(content);
 
+    // SUMAR estadísticas de todos los heartbeats del mismo usuario
     merged.ppm += Number(stats.ppm) || 0;
     merged.packs += Number(stats.packs) || 0;
 
+    // Conservamos el tiempo del heartbeat más reciente
     if (stats.time && stats.time !== "0") {
       merged.time = stats.time;
     }
 
+    // SUMAR INSTANCIAS ONLINE de todos los heartbeats
     if (Array.isArray(stats.online)) {
       merged.online.push(...stats.online);
     }
 
-    if (Array.isArray(stats.offline)) {
-      if (!stats.offline.includes("none")) {
-        merged.offline.push(...stats.offline);
-      }
+    // SUMAR INSTANCIAS OFFLINE de todos los heartbeats
+    if (Array.isArray(stats.offline) && !stats.offline.includes("none")) {
+      merged.offline.push(...stats.offline);
     }
   }
 
+  // Evitar problemas con decimales
   merged.ppm = Number(merged.ppm.toFixed(2));
 
   if (!merged.offline.length) {
