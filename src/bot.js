@@ -314,23 +314,20 @@ function namesMatch(heartbeatName, registeredName) {
   // Coincidencia normal
   if (hb === reg) return true;
 
-  // Permite:
+  // SOLO permite que "Nombre2" pertenezca a "Nombre"
+  // Ejemplo:
   // Arcade  -> Arcade
   // Arcade2 -> Arcade
-  // Arcade3 -> Arcade
-  // Arcade10 -> Arcade
   //
-  // Pero NO:
-  // ArcadeX -> Arcade
-  // Arcade_2 -> Arcade
-  const numberedHeartbeat = hb.match(/^(.+?)(\d+)$/);
+  // NO permite:
+  // Arcade3
+  // Arcade4
+  // ArcadeX
+  // Arcade_2
+  const secondPC = hb.match(/^(.+?)2$/);
 
-  if (numberedHeartbeat) {
-    const baseName = numberedHeartbeat[1];
-
-    if (baseName === reg) {
-      return true;
-    }
+  if (secondPC && secondPC[1] === reg) {
+    return true;
   }
 
   return false;
@@ -376,22 +373,40 @@ function findLastMessagesForUserAliases(messages, userData) {
   if (!messages || !Array.isArray(messages)) return [];
 
   const candidates = getUserNameCandidates(userData);
-  const uniqueMessages = new Map();
+  const foundByName = new Map();
 
   for (const msg of messages) {
     const content = getMessageText(msg);
     if (!content) continue;
 
     const heartbeatName = extractHeartbeatName(content);
+    const normalizedHeartbeatName = normalizeHeartbeatName(heartbeatName);
 
-    if (!heartbeatName) continue;
+    if (!normalizedHeartbeatName) continue;
 
     for (const candidate of candidates) {
+      const normalizedCandidate = normalizeHeartbeatName(candidate);
+
+      if (!normalizedCandidate) continue;
+
       if (namesMatch(heartbeatName, candidate)) {
-        uniqueMessages.set(msg.id, msg);
-        break;
+
+        // IMPORTANTE:
+        // Guardamos por nombre REAL del heartbeat.
+        // Así Arcade y Arcade2 pueden aportar cada uno
+        // su último heartbeat, pero NO todos los heartbeats
+        // históricos.
+        if (!foundByName.has(normalizedHeartbeatName)) {
+          foundByName.set(normalizedHeartbeatName, msg);
+        }
       }
     }
+  }
+
+  const uniqueMessages = new Map();
+
+  for (const msg of foundByName.values()) {
+    uniqueMessages.set(msg.id, msg);
   }
 
   return Array.from(uniqueMessages.values());
