@@ -311,7 +311,29 @@ function namesMatch(heartbeatName, registeredName) {
 
   if (!hb || !reg) return false;
 
-  return hb === reg;
+  // Coincidencia normal
+  if (hb === reg) return true;
+
+  // Permite:
+  // Arcade  -> Arcade
+  // Arcade2 -> Arcade
+  // Arcade3 -> Arcade
+  // Arcade10 -> Arcade
+  //
+  // Pero NO:
+  // ArcadeX -> Arcade
+  // Arcade_2 -> Arcade
+  const numberedHeartbeat = hb.match(/^(.+?)(\d+)$/);
+
+  if (numberedHeartbeat) {
+    const baseName = numberedHeartbeat[1];
+
+    if (baseName === reg) {
+      return true;
+    }
+  }
+
+  return false;
 }
 
 function getUserNameCandidates(userData) {
@@ -354,34 +376,22 @@ function findLastMessagesForUserAliases(messages, userData) {
   if (!messages || !Array.isArray(messages)) return [];
 
   const candidates = getUserNameCandidates(userData);
-  const foundByName = new Map();
+  const uniqueMessages = new Map();
 
   for (const msg of messages) {
     const content = getMessageText(msg);
     if (!content) continue;
 
     const heartbeatName = extractHeartbeatName(content);
-    const normalizedHeartbeatName = normalizeHeartbeatName(heartbeatName);
 
-    if (!normalizedHeartbeatName) continue;
+    if (!heartbeatName) continue;
 
     for (const candidate of candidates) {
-      const normalizedCandidate = normalizeHeartbeatName(candidate);
-
-      if (!normalizedCandidate) continue;
-
       if (namesMatch(heartbeatName, candidate)) {
-        if (!foundByName.has(normalizedCandidate)) {
-          foundByName.set(normalizedCandidate, msg);
-        }
+        uniqueMessages.set(msg.id, msg);
+        break;
       }
     }
-  }
-
-  const uniqueMessages = new Map();
-
-  for (const msg of foundByName.values()) {
-    uniqueMessages.set(msg.id, msg);
   }
 
   return Array.from(uniqueMessages.values());
