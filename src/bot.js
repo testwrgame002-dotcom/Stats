@@ -390,7 +390,7 @@ function findLastMessagesForUserAliases(messages, userData) {
   }
 
   return Array.from(uniqueMessages.values());
-
+}
 
 function mergeStatsFromMessages(messages) {
   const merged = {
